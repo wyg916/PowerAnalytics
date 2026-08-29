@@ -1,0 +1,3 @@
+* text=auto
+*.bat text eol=crlf
+knowledge_base/project_knowledge/ai_assistant_explanation_policies.md whitespace=-blank-at-eol

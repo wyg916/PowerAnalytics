@@ -1,0 +1,428 @@
+import { DownloadOutlined, ReloadOutlined, SettingOutlined } from '@ant-design/icons';
+import { App, Button, Form, Input, InputNumber, Modal, Select, Switch, Tooltip } from 'antd';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { api } from '../../api';
+import { PageHeader, type PageHeaderAction } from '../../components/common/PageHeader';
+import { PageTabs } from '../../components/common/PageTabs';
+import { PageDataState } from '../../components/common/States';
+import {
+  ReviewWorkspace,
+  StorageWorkspace,
+  StrategyMetricStrip,
+  StrategyOverviewBottom,
+  StrategyOverviewMain
+} from '../../components/strategy/StrategyDesign';
+import { getStrategyCenterData } from '../../services/strategyApi';
+import { resolvePageDataMeta } from '../../services/viewState';
+import { useAuth } from '../../context/AuthContext';
+import type { PageProps } from '../../types/ui';
+import './strategy-center-layout.css';
+
+type ReviewFilters = {
+  risk: string;
+  status: string;
+  search: string;
+};
+
+const DEFAULT_REVIEW_FILTERS: ReviewFilters = { risk: 'all', status: 'all', search: '' };
+const REVIEW_FILTER_POLICY = 'preserve-within-session';
+
+const strategyTabs = [
+  { key: 'strategy-high', label: '总览主页面' },
+  { key: 'strategy-storage', label: '低价窗口与储能策略' },
+  { key: 'strategy-review', label: '人工复核' }
+];
+
+function StrategyCenterPageHeader({
+  activeTabKey,
+  tabs,
+  onTabChange,
+  metadata,
+  filters,
+  actions,
+  subtitle
+}: {
+  activeTabKey: string;
+  tabs: Array<{ key: string; label: string }>;
+  onTabChange: (key: string) => void;
+  metadata: ReactNode;
+  filters: ReactNode;
+  actions: PageHeaderAction[];
+  subtitle: string;
+}) {
+  return (
+    <PageHeader
+      title="策略中心"
+      subtitle={subtitle}
+      navigation={<div className="strategy-page-tabs"><PageTabs items={tabs} activeKey={activeTabKey} onChange={onTabChange} /></div>}
+      className="strategy-page-header"
+      metadata={metadata}
+      filters={filters}
+      actions={actions}
+    />
+  );
+}
+
+function exportCsv(filename: string, rows: Record<string, unknown>[], notifyEmpty: () => void) {
+  if (!rows.length) {
+    notifyEmpty();
+    return;
+  }
+  const keys = Object.keys(rows[0]);
+  const csv = [keys, ...rows.map((row) => keys.map((key) => row[key]))]
+    .map((line) => line.map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${filename}_${Date.now()}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export function StrategyCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
+  const { message } = App.useApp();
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configValues, setConfigValues] = useState<Record<string, any>>({});
+  const [selectedStorage, setSelectedStorage] = useState<string>();
+  const [selectedDevice, setSelectedDevice] = useState<string>();
+  const [selectedReview, setSelectedReview] = useState<string>();
+  const [reviewFilters, setReviewFilters] = useState<ReviewFilters>(DEFAULT_REVIEW_FILTERS);
+
+  const [reviewHistory, setReviewHistory] = useState<any[]>([]);
+  const { canPerformAction } = useAuth();
+  const canReview = canPerformAction('strategy:review');
+  const reviewPermissions = {
+    canSubmit: canPerformAction('strategy:submit'),
+    canReview,
+    canPublish: canPerformAction('strategy:publish')
+  };
+  const canConfigure = canPerformAction('strategy:manage');
+  const mode = useMemo<'overview' | 'storage' | 'review'>(() => {
+    if (activeSubKey === 'strategy-review' && canReview) return 'review';
+    if (activeSubKey === 'strategy-low' || activeSubKey === 'strategy-storage') return 'storage';
+    return 'overview';
+  }, [activeSubKey, canReview]);
+  const activeTabKey = mode === 'overview' ? 'strategy-high' : mode === 'storage' ? 'strategy-storage' : 'strategy-review';
+  const filteredReviewRows = useMemo(() => {
+    const rows = data?.reviewRows || [];
+    const needle = reviewFilters.search.trim().toLowerCase();
+    return rows.filter((row: any) => {
+      const riskMatches = reviewFilters.risk === 'all' || row.risk === reviewFilters.risk;
+      const statusMatches = reviewFilters.status === 'all' || row.status === reviewFilters.status;
+      const textMatches = !needle || [row.id, row.reason, row.action, row.assignee, row.runId, row.reportId]
+        .some((value) => String(value || '').toLowerCase().includes(needle));
+      return riskMatches && statusMatches && textMatches;
+    });
+  }, [data?.reviewRows, reviewFilters]);
+  const reviewFiltersActive = reviewFilters.risk !== DEFAULT_REVIEW_FILTERS.risk
+    || reviewFilters.status !== DEFAULT_REVIEW_FILTERS.status
+    || Boolean(reviewFilters.search.trim());
+  const handleStrategyTabChange = useCallback((key: string) => {
+    // 产品规则：复核筛选仅在当前页面会话内保留，跨子页切换不隐式清空；刷新页面后恢复默认值。
+    onSubNavigate(key);
+  }, [onSubNavigate]);
+  const resetReviewFilters = useCallback(() => {
+    setReviewFilters(DEFAULT_REVIEW_FILTERS);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await getStrategyCenterData();
+      setData(result);
+      setConfigValues(result.config || {});
+      setSelectedDevice((current) => result.devices?.some((item: any) => item.device_id === current) ? current : result.devices?.[0]?.device_id);
+      setSelectedStorage((current) => result.executionItems?.some((item: any) => item.key === current) ? current : result.executionItems?.[0]?.key);
+      setSelectedReview((current) => result.reviewRows?.some((item: any) => item.key === current) ? current : result.reviewRows?.[0]?.key);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : '策略数据加载失败';
+      setData({ available: false, empty: false, error: reason, partialErrors: [] });
+      message.error(reason);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadReviewHistory = useCallback(async (strategyId?: string) => {
+    if (!canReview || !strategyId) {
+      setReviewHistory([]);
+      return;
+    }
+    try {
+      const result = await api.strategyReviews(strategyId);
+      setReviewHistory(Array.isArray(result?.items) ? result.items : []);
+    } catch {
+      setReviewHistory([]);
+    }
+  }, [canReview]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (!canReview || mode !== 'review') {
+      setReviewHistory([]);
+      return;
+    }
+    const row = data?.reviewRows?.find((item: any) => item.key === selectedReview);
+    if (row?.contentHash) loadReviewHistory(row.id);
+    else setReviewHistory([]);
+  }, [canReview, data, mode, selectedReview, loadReviewHistory]);
+
+  useEffect(() => {
+    if (mode !== 'review') return;
+    setSelectedReview((current) => (
+      filteredReviewRows.some((item: any) => item.key === current)
+        ? current
+        : filteredReviewRows[0]?.key
+    ));
+  }, [filteredReviewRows, mode]);
+
+  async function saveConfig() {
+    try {
+      await api.saveStrategyConfig(configValues);
+      message.success('策略配置已保存');
+      setConfigOpen(false);
+      await loadData();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '策略配置保存失败');
+    }
+  }
+
+  async function handleReviewAction(row: any, action: string, comment: string) {
+    if ((action === 'reject' || action === 'return') && !comment.trim()) {
+      message.warning('驳回或退回必须填写复核意见');
+      return;
+    }
+    if (!row?.contentHash) {
+      message.warning('该记录来自旧接口，缺少不可变内容哈希，不能执行治理状态流转');
+      return;
+    }
+    if (action === 'publish' && row.isStale) {
+      message.warning(`当前策略未通过发布门禁：${row.staleReason || '策略已过期或绑定事实不是当前批次'}。请先生成并复核当前有效策略。`);
+      return;
+    }
+    try {
+      const requestId = globalThis.crypto?.randomUUID?.() || `p5d-${Date.now()}`;
+      await api.strategyAction(row.id, action, { request_id: requestId, review_comment: comment.trim() });
+      message.success('策略状态与审计记录已同步更新');
+      await loadData();
+      await loadReviewHistory(row.id);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '策略状态流转失败';
+      const labels: Record<string, string> = {
+        stale_strategy_cannot_publish: '当前策略已过期或属于历史事实，不能发布；请生成当前有效策略后重新复核。',
+        expired_strategy_cannot_publish: '当前策略已超过适用时间，不能发布；请生成当前有效策略后重新复核。',
+        invalid_transition: '当前状态不允许执行该操作，请刷新后按“提交复核 → 通过 → 发布”的顺序操作。',
+        reviewer_must_differ_from_creator: '策略创建人与复核人必须分离，请由其他具备复核权限的账号处理。'
+      };
+      const matched = Object.entries(labels).find(([code]) => detail.includes(code));
+      message.error(matched?.[1] || detail);
+    }
+  }
+
+  const viewMeta = useMemo(() => resolvePageDataMeta({
+    loading,
+    hasData: Boolean(data?.available && !data?.empty),
+    empty: Boolean(data?.empty),
+    error: data?.error,
+    partialErrors: data?.partialErrors,
+    source: data?.sourceType,
+    generatedAt: data?.generatedAt,
+    runId: data?.runId,
+    modelVersion: data?.modelVersion,
+    featureVersion: data?.featureVersion,
+    isStale: data?.isStale,
+    staleReason: data?.staleReason,
+    queryScope: mode === 'review' ? '策略人工复核' : mode === 'storage' ? '储能运行与执行反馈' : '策略事实总览'
+  }), [data, loading, mode]);
+  const showContent = viewMeta.state === 'success' || viewMeta.state === 'stale';
+  const headerActions = useMemo<PageHeaderAction[]>(() => {
+    const actions: PageHeaderAction[] = [
+      {
+        key: 'refresh',
+        label: '刷新',
+        icon: <ReloadOutlined />,
+        loading,
+        onClick: loadData
+      },
+      {
+        key: 'export',
+        label: mode === 'review' ? '导出复核清单' : '导出策略',
+        icon: <DownloadOutlined />,
+        collapseAtNarrow: true,
+        onClick: () => exportCsv(
+          mode === 'review' ? 'strategy_review' : 'strategy',
+          mode === 'review'
+            ? filteredReviewRows
+            : mode === 'storage'
+              ? (data?.executionItems || []).filter((item: any) => !selectedDevice || item.device_id === selectedDevice)
+              : (data?.hourlyPlan || []),
+          () => message.info('当前没有可导出的策略记录')
+        )
+      }
+    ];
+    if (mode === 'overview') {
+      actions.push({
+        key: 'config',
+        label: '策略配置',
+        icon: <SettingOutlined />,
+        collapseAtNarrow: true,
+        hidden: !canConfigure,
+        onClick: () => setConfigOpen(true)
+      });
+    }
+    if (mode === 'review') {
+      actions.push(
+        {
+          key: 'batch-approve',
+          label: '批量通过（暂不可用）',
+          type: 'primary',
+          collapseAtNarrow: true,
+          disabled: true,
+          disabledReason: '为保证逐条证据核验与审计追踪，暂不开放批量审核'
+        },
+        {
+          key: 'batch-reject',
+          label: '批量驳回（暂不可用）',
+          danger: true,
+          collapseAtNarrow: true,
+          disabled: true,
+          disabledReason: '为保证逐条填写驳回原因与审计追踪，暂不开放批量审核'
+        }
+      );
+    }
+    return actions;
+  }, [canConfigure, data?.executionItems, data?.hourlyPlan, filteredReviewRows, loadData, loading, mode, selectedDevice]);
+  const strategySubtitle = loading
+    ? '正在核对策略、审核、业务窗口和运行反馈。'
+    : !data?.available
+      ? '当前策略事实不可用；页面不会生成默认策略、收益或执行状态。'
+      : mode === 'overview'
+    ? '汇总策略结论、风险窗口、执行状态与收益口径，执行前仍须人工复核。'
+    : mode === 'storage'
+      ? '展示设备状态、计划反馈与收益口径，支持只读复核。'
+      : '承接高风险策略的人工审核与人机协同闭环，确保关键交易决策安全、合规、可追溯。';
+
+  return (
+    <div className={`strategy-design-page strategy-${mode}-page`}>
+      <StrategyCenterPageHeader
+        activeTabKey={activeTabKey}
+        tabs={strategyTabs.filter((item) => item.key !== 'strategy-review' || reviewPermissions.canReview)}
+        onTabChange={handleStrategyTabChange}
+        subtitle={strategySubtitle}
+        metadata={(
+          <div className="strategy-header-metadata">
+            <span className="strategy-meta-date"><small>{mode === 'review' ? '复核日期' : '策略日期'}</small><strong>{data?.strategyDate || '--'}</strong></span>
+            <span className="strategy-meta-status"><small>审核状态</small><strong>{data?.strategyStatusLabel || '--'}</strong></span>
+          </div>
+        )}
+        filters={(
+          <div
+            className="strategy-header-filters"
+            data-filter-policy={mode === 'review' ? REVIEW_FILTER_POLICY : 'page-scoped'}
+          >
+            <label>
+              <span>区域</span>
+              <Tooltip title={data?.region ? '接口返回区域，仅用于当前策略上下文' : '当前策略接口未提供区域字段，不能伪造筛选值'}>
+                <Select
+                  size="small"
+                  disabled
+                  value={data?.region || 'unavailable'}
+                  options={[{ value: data?.region || 'unavailable', label: data?.region || '区域未提供' }]}
+                />
+              </Tooltip>
+            </label>
+            {mode === 'review' && (
+              <>
+                <label>
+                  <span>风险</span>
+                  <Select size="small" value={reviewFilters.risk} onChange={(risk) => setReviewFilters((current) => ({ ...current, risk }))} options={[{ value: 'all', label: '全部' }, { value: 'high', label: '高风险' }, { value: 'medium', label: '中风险' }, { value: 'low', label: '低风险' }]} />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <Select size="small" value={reviewFilters.status} onChange={(status) => setReviewFilters((current) => ({ ...current, status }))} options={[{ value: 'all', label: '全部' }, { value: 'draft', label: '草稿' }, { value: 'pending_review', label: '待复核' }, { value: 'approved', label: '已通过' }, { value: 'rejected', label: '已驳回' }, { value: 'published', label: '已发布' }]} />
+                </label>
+                <Input size="small" allowClear value={reviewFilters.search} onChange={(event) => setReviewFilters((current) => ({ ...current, search: event.target.value }))} placeholder="搜索编号 / 原因" />
+                <Button
+                  className="strategy-filter-reset"
+                  type="link"
+                  size="small"
+                  disabled={!reviewFiltersActive}
+                  onClick={resetReviewFilters}
+                >
+                  清除筛选
+                </Button>
+              </>
+            )}
+            {mode === 'storage' && (
+              <label>
+                <span>执行对象</span>
+                <Select
+                  size="small"
+                  value={selectedDevice}
+                  placeholder="选择储能设备"
+                  onChange={(deviceId) => {
+                    setSelectedDevice(deviceId);
+                    setSelectedStorage(data?.executionItems?.find((item: any) => item.device_id === deviceId)?.key);
+                  }}
+                  options={(data?.devices || []).map((item: any) => ({ value: item.device_id, label: item.device_name }))}
+                />
+              </label>
+            )}
+          </div>
+        )}
+        actions={headerActions}
+      />
+      <PageDataState meta={viewMeta} onRetry={loadData} mockFallback={false} />
+      {showContent ? <StrategyMetricStrip data={data} mode={mode} /> : null}
+      {showContent && mode === 'overview' && (
+        <>
+          <StrategyOverviewMain data={data} />
+          <StrategyOverviewBottom data={data} />
+        </>
+      )}
+      {showContent && mode === 'storage' && (
+        <StorageWorkspace
+          data={data}
+          selectedKey={selectedStorage}
+          selectedDeviceId={selectedDevice}
+          onSelect={(row) => setSelectedStorage(row.key)}
+          onDeviceChange={(deviceId) => {
+            setSelectedDevice(deviceId);
+            setSelectedStorage(data?.executionItems?.find((item: any) => item.device_id === deviceId)?.key);
+          }}
+        />
+      )}
+      {showContent && mode === 'review' && (
+        <ReviewWorkspace
+          data={data}
+          selectedKey={selectedReview}
+          onSelect={(row) => setSelectedReview(row.key)}
+          onAction={handleReviewAction}
+          permissions={reviewPermissions}
+          reviewHistory={reviewHistory}
+          rows={filteredReviewRows}
+          totalRows={data?.reviewRows?.length || 0}
+        />
+      )}
+
+      <Modal title="策略配置" open={configOpen} onCancel={() => setConfigOpen(false)} onOk={saveConfig} okText="保存配置" okButtonProps={{ disabled: !canConfigure }}>
+        <Form layout="vertical">
+          <Form.Item label="高价阈值"><InputNumber value={configValues.high_price_threshold} onChange={(value) => setConfigValues((prev) => ({ ...prev, high_price_threshold: value }))} min={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="低价阈值"><InputNumber value={configValues.low_price_threshold} onChange={(value) => setConfigValues((prev) => ({ ...prev, low_price_threshold: value }))} min={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="SOC 上限"><InputNumber value={configValues.soc_upper} onChange={(value) => setConfigValues((prev) => ({ ...prev, soc_upper: value }))} min={0} max={100} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="SOC 下限"><InputNumber value={configValues.soc_lower} onChange={(value) => setConfigValues((prev) => ({ ...prev, soc_lower: value }))} min={0} max={100} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="充电功率"><InputNumber value={configValues.charge_power} onChange={(value) => setConfigValues((prev) => ({ ...prev, charge_power: value }))} min={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="放电功率"><InputNumber value={configValues.discharge_power} onChange={(value) => setConfigValues((prev) => ({ ...prev, discharge_power: value }))} min={0} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="风险等级阈值"><InputNumber value={configValues.risk_threshold} onChange={(value) => setConfigValues((prev) => ({ ...prev, risk_threshold: value }))} min={0} max={1} step={0.05} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item label="允许自动建议"><Switch checked={Boolean(configValues.auto_suggestion)} onChange={(value) => setConfigValues((prev) => ({ ...prev, auto_suggestion: value }))} /></Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}

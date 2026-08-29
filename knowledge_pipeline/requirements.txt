@@ -1,0 +1,8 @@
+pymupdf
+python-docx
+openpyxl
+beautifulsoup4
+lxml
+chardet
+tqdm
+jsonschema==4.26.0

@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from backend.app.api.v1.endpoints import knowledge as knowledge_endpoint
+from backend.app.main import app
+
+
+client = TestClient(app)
+
+
+def test_knowledge_documents_endpoint_contract(monkeypatch):
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "list_knowledge_documents",
+        lambda page=1, page_size=20, search="": {
+            "available": True,
+            "items": [{"doc_id": "kb_test", "title": "浙江省电力市场交易规则", "chunk_count": 2, "status": "indexed"}],
+            "total": 1,
+            "page": page,
+            "page_size": page_size,
+        },
+    )
+
+    response = client.get("/api/knowledge/documents", headers={"X-User": "viewer1", "X-Role": "viewer"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["doc_id"] == "kb_test"
+
+
+def test_knowledge_qa_test_uses_rag_and_returns_answer(monkeypatch):
+    monkeypatch.setattr(knowledge_endpoint, "enterprise_mode", lambda: False)
+    monkeypatch.setattr(knowledge_endpoint, "ensure_seed_knowledge", lambda: {"available": True})
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "rag_search",
+        lambda query, top_k=5: {
+            "query": query,
+            "items": [{"chunk_id": "c1", "title": "规则", "content": "分时电价规则", "final_score": 0.9}],
+            "retrieval": {"mode": "hybrid"},
+            "timings_ms": {"total_ms": 1.0},
+        },
+    )
+    monkeypatch.setattr(knowledge_endpoint, "record_search_result", lambda query, top_k, result: {"available": True, "search_id": "ks_test"})
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "run_qa_from_search",
+        lambda question, top_k, search_result, started_at: {
+            **search_result,
+            "answer": "结论：可参考分时电价规则。",
+            "answer_blocks": [{"key": "conclusion", "title": "结论", "tone": "success", "content": "可参考分时电价规则。"}],
+            "passed": True,
+            "qa_test": {"available": True, "test_id": "kqa_test"},
+        },
+    )
+
+    response = client.post(
+        "/api/knowledge/qa-test",
+        headers={"X-User": "viewer1", "X-Role": "viewer"},
+        json={"question": "分时电价规则是什么？", "top_k": 5},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"]
+    assert payload["answer_blocks"][0]["title"] == "结论"
+    assert payload["qa_test"]["test_id"] == "kqa_test"
+
+
+def test_knowledge_upload_requires_write_permission(monkeypatch):
+    monkeypatch.setattr(knowledge_endpoint, "upsert_document", lambda **kwargs: {"available": True, "doc_id": "kb_uploaded", "chunks": 1})
+    monkeypatch.setattr(knowledge_endpoint, "write_audit_log", lambda **kwargs: True)
+
+    denied = client.post(
+        "/api/knowledge/upload",
+        headers={"X-User": "viewer1", "X-Role": "viewer"},
+        files={"file": ("policy.md", b"# test", "text/markdown")},
+    )
+    analyst_denied = client.post(
+        "/api/knowledge/upload",
+        headers={"X-User": "analyst1", "X-Role": "analyst"},
+        files={"file": ("policy.md", b"# test", "text/markdown")},
+    )
+    allowed = client.post(
+        "/api/knowledge/upload",
+        headers={"X-User": "reviewer1", "X-Role": "reviewer"},
+        files={"file": ("policy.md", b"# test", "text/markdown")},
+    )
+
+    assert denied.status_code == 403
+    assert analyst_denied.status_code == 403
+    assert allowed.status_code == 200
+    assert allowed.json()["doc_id"] == "kb_uploaded"
+
+
+def test_document_reindex_is_scoped_to_selected_document(monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_knowledge_document",
+        lambda doc_id, **kwargs: {"available": True, "document": {"doc_id": doc_id}},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "enqueue_task",
+        lambda kind, payload: captured.update({"kind": kind, "payload": payload})
+        or {"task_id": "task_doc_reindex"},
+    )
+    monkeypatch.setattr(knowledge_endpoint, "write_audit_log", lambda **kwargs: True)
+
+    response = client.post(
+        "/api/knowledge/documents/kb_doc_1/reindex",
+        headers={"X-User": "reviewer1", "X-Role": "reviewer"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "kind": "embedding_refresh",
+        "payload": {"doc_id": "kb_doc_1", "scope": "document:kb_doc_1"},
+    }
+
+
+def test_knowledge_document_reads_receive_authenticated_tenant_scope(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def scoped_documents(*, page=1, page_size=20, search="", tenant_id="default"):
+        captured["tenant_id"] = tenant_id
+        return {
+            "available": True,
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    monkeypatch.setattr(knowledge_endpoint, "list_knowledge_documents", scoped_documents)
+    user = knowledge_endpoint.CurrentUser(
+        user_id="tenant-b-user",
+        username="tenant-b-user",
+        role="viewer",
+        permissions=["knowledge:read"],
+        auth_mode="test",
+        tenant_id="tenant_b",
+        workspace_id="workspace_b",
+        role_ids=("viewer",),
+    )
+
+    result = knowledge_endpoint.get_knowledge_documents(user)
+
+    assert result["total"] == 0
+    assert captured["tenant_id"] == "tenant_b"
+
+
+def test_release_context_uses_authenticated_tenant():
+    user = knowledge_endpoint.CurrentUser(
+        user_id="tenant-b-user",
+        username="tenant-b-user",
+        role="reviewer",
+        permissions=["knowledge:read", "knowledge:publish"],
+        auth_mode="test",
+        tenant_id="tenant_b",
+        workspace_id="workspace_b",
+        role_ids=("reviewer",),
+    )
+
+    context = knowledge_endpoint._release_context(type("Request", (), {"headers": {}})(), user)
+
+    assert context.tenant_id == "tenant_b"
+    assert context.actor_id == "tenant-b-user"
+
+
+def test_knowledge_document_detail_returns_not_found_without_leaking_scope(monkeypatch):
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_knowledge_document",
+        lambda doc_id, tenant_id="default": {
+            "available": False,
+            "document": None,
+            "reason": "not_found",
+        },
+    )
+
+    response = client.get(
+        "/api/knowledge/documents/tenant-a-document",
+        headers={"X-User": "tenant-b-user", "X-Role": "viewer", "X-Tenant-Id": "tenant_b"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "knowledge_document_not_found"
+
+
+def test_knowledge_document_chunks_return_not_found_before_listing(monkeypatch):
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "get_knowledge_document",
+        lambda doc_id, tenant_id="default": {
+            "available": False,
+            "document": None,
+            "reason": "not_found",
+        },
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "list_knowledge_chunks",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("chunk query must not run")),
+    )
+
+    response = client.get(
+        "/api/knowledge/documents/tenant-a-document/chunks",
+        headers={"X-User": "tenant-b-user", "X-Role": "viewer", "X-Tenant-Id": "tenant_b"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "knowledge_document_not_found"
