@@ -1,4 +1,4 @@
-﻿pandas>=2.1,<3.0
+pandas>=2.1,<3.0
 numpy>=1.26,<3.0
 matplotlib>=3.8,<4.0
 scikit-learn>=1.4,<2.0
@@ -17,7 +17,7 @@ PyMuPDF>=1.23,<2.0
 Pillow>=10,<13
 joblib>=1.3,<2.0
 jsonschema>=4.22,<5.0
-python-dotenv>=1.0,<2.0
+python-dotenv>=1.2.3,<2.0
 fastapi>=0.111,<1.0
 httpx2>=2.7,<3.0
 uvicorn[standard]>=0.30,<1.0
