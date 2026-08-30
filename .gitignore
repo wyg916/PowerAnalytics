@@ -1,0 +1,106 @@
+.env
+.env.*
+!.env.example
+!.env.docker.example
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+docx_render_check_*/
+.playwright-cli/
+.playwright-mcp/
+.codex_tmp/
+.codex_envs/
+backups/
+wheelhouse/
+browser_cache/
+.browser_cache/
+docs/phase2/
+tests/productization/output/
+student_python_project/
+student_python_project_v2/
+~$*.docx
+*.lnk
+*.tmp
+*.bak
+*.secret
+*.secrets
+secrets/
+.secrets/
+
+# Runtime logs and transient process files
+*.log
+*.out.log
+*.err.log
+*.pid
+celerybeat-schedule*
+celery*.state
+
+# Python / virtualenv artifacts
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+/.vite/
+
+# Root-level UI/runtime verification outputs
+/*.png
+/*-snapshot.md
+/*-console.txt
+/*-layout-check.json
+
+# Large local model/data artifacts
+*.zip
+cloud_model_data_package_*/
+bge-large-zh-v1.5/
+bge-reranker-v2-m3/
+model_artifacts/*
+!model_artifacts/*/
+model_artifacts/*/*
+!model_artifacts/*/manifest.json
+!model_artifacts/*/feature_cols.json
+!model_artifacts/*/input_schema.json
+!model_artifacts/*/metrics.json
+!model_artifacts/*/model_card.md
+!model_artifacts/*/thresholds.json
+!model_artifacts/*/training_config.json
+/model_artifacts/model_day6b_*/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local generated runtime outputs
+/.runtime/
+/output/
+/backend/data/assistant_uploads/
+自动化输出/
+全流程预测结果数据存放/
+结果-3/
+结果/
+结果-1/
+electricity_tariff_output/
+
+# Knowledge pipeline generated corpora/artifacts
+knowledge_pipeline/chunks/
+knowledge_pipeline/converted/
+knowledge_pipeline/markdown/
+knowledge_pipeline/raw/
+knowledge_pipeline/output/
+
+# Docker/local runtime transient state
+.docker-state/
+docker-data/
+
+# Reconstruct locally from docs/large-assets/ui-gap-report-v20260621/
+/docs/智能运营分析项目_UI优化参考图与当前功能差异分析说明文档_v20260621.docx

@@ -1,0 +1,15 @@
+PowerAnalytics
+Copyright (C) 2026 wyg916
+
+PowerAnalytics-owned source code, documentation, brand artwork, and product
+screenshots in this repository are licensed under the GNU Affero General
+Public License, version 3 or (at your option) any later version.
+
+This distribution includes or references third-party software that remains
+under its respective copyright and license terms. See THIRD_PARTY_NOTICES.md
+and the license files supplied by those upstream packages.
+
+Model weights, raw knowledge corpora, databases, vector snapshots, secrets,
+and source recording masters are not part of this distribution.
+
+The PowerAnalytics name and project identifiers are not licensed as trademarks.
