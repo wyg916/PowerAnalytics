@@ -44,11 +44,13 @@ PowerAnalytics brings operating data, model forecasts, risk analysis, strategy e
 - Coordinates rules, controlled data tools, RAG, and routed MiMo / DeepSeek / Kimi capabilities.
 - Uses Citation, Grounding, Answer Guard, Trace, RBAC, and Memory to keep answers reviewable and continuous.
 
-## Product demo
+## Project demo video
 
-The repository does not publish the 65-minute or 19-minute source recordings. Until a professionally edited demo is available, the real product capture below is the entry point to the verified walkthrough in [DEMO_GUIDE.md](docs/DEMO_GUIDE.md).
+https://github.com/user-attachments/assets/149a3576-f137-4806-a25f-cfa50092647b
 
-[![Open the product demo guide](docs/media/screenshots/dashboard.webp)](docs/DEMO_GUIDE.md)
+> A two-minute real-product demonstration using GitHub's native video attachment player. Click to play inline—no automatic download. The embedded copy is 720p, 30 fps, H.264/AAC, with Chinese narration and highlighted Chinese subtitles.
+
+The footage was captured from the running project and covers the dashboard, ChatBI, streaming output, short- and long-term memory, RAG citations, data and forecasting, strategy, knowledge base, model evaluation, tasks, and system governance. The demonstration uses historical replay data and does not represent a live electricity-market forecast. Raw recordings are not distributed with the repository. See [DEMO_GUIDE.md](docs/DEMO_GUIDE.md) for the verified walkthrough and [docs/media/README.md](docs/media/README.md) for provenance, the HD Release copy, and checksums.
 
 <a id="product-preview"></a>
 ## Product preview

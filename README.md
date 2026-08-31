@@ -45,11 +45,13 @@
 - 通过 Citation、Grounding、Answer Guard、Trace、RBAC 与 Memory 提升可核对性和连续性。
 
 <a id="product-demo"></a>
-## 产品演示
+## 项目介绍视频
 
-当前仓库不上传 65 分钟或 19 分钟的原始录屏母带。正式精剪视频尚未接入时，先以真实产品画面展示核心工作流；演示路线、问题和通过标准见 [DEMO_GUIDE.md](docs/DEMO_GUIDE.md)。
+https://github.com/user-attachments/assets/149a3576-f137-4806-a25f-cfa50092647b
 
-[![打开产品演示指南](docs/media/screenshots/dashboard.webp)](docs/DEMO_GUIDE.md)
+> 2 分钟真实产品演示。使用 GitHub 原生视频附件播放器，点击播放、不自动下载；720p、30fps、H.264/AAC，含中文配音与黄色加粗字幕。
+
+画面来自本项目实际运行，覆盖看板、ChatBI、流式输出、长短期记忆、RAG Citation、数据与预测、策略、知识库、模型评测、任务及系统治理。演示采用历史回放数据，不表示实时电力市场在线预测，原始录屏母带不随仓库发布。完整演示路线、提问与通过标准见 [DEMO_GUIDE.md](docs/DEMO_GUIDE.md)，媒体来源、高清 Release 版本与校验信息见 [docs/media/README.md](docs/media/README.md)。
 
 <a id="product-preview"></a>
 ## 产品预览
