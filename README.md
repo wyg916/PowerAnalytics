@@ -274,8 +274,6 @@ docker compose --env-file .env.docker config --quiet
 docker compose --env-file .env.docker up -d --build
 ```
 
-- 访问：`http://127.0.0.1:8080`
-- 健康：`http://127.0.0.1:8000/api/health`
 
 源码开发者也可以分别启动 FastAPI 与 Vite；公开快照不携带内部机器专用的一键启动器，命令见 [QUICKSTART.md](docs/QUICKSTART.md)。
 
