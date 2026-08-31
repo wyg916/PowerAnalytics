@@ -249,8 +249,8 @@ function normalizeAttachmentRecord(payload: any, file?: File): AssistantAttachme
   };
 }
 
-export async function getAssistantAttachment(attachmentId: string, sessionId?: string) {
-  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+export async function getAssistantAttachment(attachmentId: string, sessionId: string) {
+  const query = `?session_id=${encodeURIComponent(sessionId)}`;
   const response = await fetch(downloadUrl(`/api/ai/attachments/${encodeURIComponent(attachmentId)}${query}`), {
     headers: authHeaders(false)
   });
@@ -261,8 +261,9 @@ export async function getAssistantAttachment(attachmentId: string, sessionId?: s
   return normalizeAttachmentRecord(await response.json());
 }
 
-export async function deleteAssistantAttachment(attachmentId: string) {
-  const response = await fetch(downloadUrl(`/api/ai/attachments/${encodeURIComponent(attachmentId)}`), {
+export async function deleteAssistantAttachment(attachmentId: string, sessionId: string) {
+  const query = `?session_id=${encodeURIComponent(sessionId)}`;
+  const response = await fetch(downloadUrl(`/api/ai/attachments/${encodeURIComponent(attachmentId)}${query}`), {
     method: 'DELETE',
     headers: authHeaders(false)
   });

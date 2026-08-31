@@ -74,7 +74,9 @@ export function GlobalAssistantDrawer({
     for (let attempt = 0; attempt < 15 && !pollingTerminal.has(current.status); attempt += 1) {
       await wait(1200);
       try {
-        const record = await getAssistantAttachment(current.attachment_id, current.session_id || state.sessionId || undefined);
+        const attachmentSessionId = current.session_id || state.sessionId;
+        if (!attachmentSessionId) throw new Error('附件缺少会话标识，无法读取。');
+        const record = await getAssistantAttachment(current.attachment_id, attachmentSessionId);
         current = { ...current, ...record };
         globalAssistantStore.replaceAttachment(clientId, current);
       } catch (error) {
@@ -116,7 +118,9 @@ export function GlobalAssistantDrawer({
   async function removeAttachment(attachment: GlobalAssistantAttachment) {
     if (attachment.attachment_id) {
       try {
-        await deleteAssistantAttachment(attachment.attachment_id);
+        const attachmentSessionId = attachment.session_id || state.sessionId;
+        if (!attachmentSessionId) throw new Error('附件缺少会话标识，无法删除。');
+        await deleteAssistantAttachment(attachment.attachment_id, attachmentSessionId);
       } catch (error) {
         message.warning(errorText(error));
         return;

@@ -28,6 +28,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
   askAssistantStream,
   createAssistantRequestId,
+  deleteAssistantAttachment,
   exportAssistantConversation,
   getAssistantAttachment,
   getAssistantData,
@@ -138,6 +139,7 @@ type AnswerState = {
 
 type AssistantAttachment = {
   attachment_id: string;
+  session_id?: string;
   filename?: string;
   kind?: string;
   content_type?: string;
@@ -860,8 +862,19 @@ export function AssistantPage(_props: PageProps) {
     }
   }
 
-  function removeAttachment(attachmentId: string) {
-    setAttachments((current) => current.filter((item) => item.attachment_id !== attachmentId));
+  async function removeAttachment(attachmentId: string) {
+    const attachment = attachments.find((item) => item.attachment_id === attachmentId);
+    const attachmentSessionId = attachment?.session_id || sessionId;
+    if (!attachmentSessionId) {
+      message.warning('附件缺少会话标识，无法删除。');
+      return;
+    }
+    try {
+      await deleteAssistantAttachment(attachmentId, attachmentSessionId);
+      setAttachments((current) => current.filter((item) => item.attachment_id !== attachmentId));
+    } catch (error) {
+      message.warning(error instanceof Error ? error.message : '附件删除失败');
+    }
   }
 
   function removeReference(referenceId: string) {
@@ -1070,7 +1083,7 @@ export function AssistantPage(_props: PageProps) {
                 {(attachments.length > 0 || selectedReferences.length > 0) && (
                   <div className="assistant-context-tags">
                     {attachments.map((item) => (
-                      <Tag key={item.attachment_id} closable onClose={() => removeAttachment(item.attachment_id)} icon={<PaperClipOutlined />}>
+                      <Tag key={item.attachment_id} closable onClose={(event) => { event.preventDefault(); void removeAttachment(item.attachment_id); }} icon={<PaperClipOutlined />}>
                         {item.file_name || item.filename} · {item.status === 'ready' ? '可使用' : item.status === 'failed' ? '失败' : item.status === 'parsing' ? '解析中' : '上传中'}
                       </Tag>
                     ))}
@@ -1243,7 +1256,7 @@ export function AssistantPage(_props: PageProps) {
             type="info"
             showIcon
             message="导出由系统服务生成"
-            description="当前 Word 导出已可用；PDF 如转换引擎尚未部署，会给出明确提示。"
+            description="Word 与 PDF 均由后端按当前会话消息生成，不包含隐藏调试 Trace。"
           />
         </Space>
       </Modal>

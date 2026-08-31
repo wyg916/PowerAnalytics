@@ -8,7 +8,6 @@ from ....core.security import CurrentUser, require_permission
 from ....repositories.audit_repository import write_audit_log
 from ....repositories.task_repository import (
     append_task_log,
-    create_pending_task_record,
     get_task_record,
     list_recent_tasks,
     list_task_log_entries,
@@ -186,37 +185,25 @@ def task_start(
     task_payload = dict(payload.get("payload") or {})
     task_payload.setdefault("created_by", getattr(user, "username", "web_user"))
     dispatch_error = ""
-    can_dispatch = kind in {"knowledge_import", "embedding_refresh", "report_generate", "sync_core_data"} | BUSINESS_TASK_KINDS
+    can_dispatch = kind in {
+        "knowledge_import",
+        "embedding_refresh",
+        "report_generate",
+        "sync_core_data",
+        "health_check",
+    } | BUSINESS_TASK_KINDS
     if not can_dispatch:
         try:
             command_for_kind(kind)
             can_dispatch = True
         except Exception as exc:
             dispatch_error = str(exc)
-    if can_dispatch:
-        try:
-            result = enqueue_task(kind, task_payload)
-        except Exception as exc:
-            dispatch_error = str(exc)
-            result = create_pending_task_record(
-                kind=kind,
-                task_name=str(payload.get("task_name") or kind),
-                payload=task_payload,
-                queue_name=str(payload.get("queue_name") or ""),
-                execution_mode="db_pending",
-                created_by=getattr(user, "username", "web_user"),
-            )
-    else:
-        result = create_pending_task_record(
-            kind=kind,
-            task_name=str(payload.get("task_name") or kind),
-            payload=task_payload,
-            queue_name=str(payload.get("queue_name") or ""),
-            execution_mode="db_pending",
-            created_by=getattr(user, "username", "web_user"),
+    if not can_dispatch:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "TASK_KIND_NOT_EXECUTABLE", "message": dispatch_error or kind},
         )
-    if dispatch_error:
-        result["dispatch_fallback_reason"] = dispatch_error[:300]
+    result = _enqueue_or_503(kind, task_payload)
     write_audit_log(
         action="task.start",
         user=user,
@@ -364,19 +351,7 @@ def task_retry(
     payload["original_task_id"] = record.get("original_task_id") or task_id
     payload["retry_count"] = retry_count + 1
     payload["force_new"] = True
-    try:
-        result = enqueue_task(kind, payload)
-    except Exception as exc:
-        result = create_pending_task_record(
-            kind=kind,
-            task_name=str(record.get("task_name") or kind),
-            payload=payload,
-            queue_name=str(record.get("queue_name") or ""),
-            execution_mode="db_pending_retry",
-            created_by=getattr(user, "username", "web_user"),
-            retry_of=task_id,
-        )
-        result["dispatch_fallback_reason"] = str(exc)[:300]
+    result = _enqueue_or_503(kind, payload)
     append_task_log(
         task_id,
         level="info",

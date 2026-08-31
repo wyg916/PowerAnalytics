@@ -11,12 +11,13 @@ interface BasicLayoutProps {
   route: RouteKey;
   activeSubKey: string;
   collapsed: boolean;
+  compactNavigation: boolean;
   onCollapse: () => void;
   onNavigate: (route: RouteKey, childKey?: string) => void;
   children: ReactNode;
 }
 
-export function BasicLayout({ route, activeSubKey, collapsed, onCollapse, onNavigate, children }: BasicLayoutProps) {
+export function BasicLayout({ route, activeSubKey, collapsed, compactNavigation, onCollapse, onNavigate, children }: BasicLayoutProps) {
   const dataWorkspace = route === 'data';
   const { canAccessRoute, permissionSnapshotHash } = useAuth();
   const group = menuGroups.find((item) => item.key === route);
@@ -25,9 +26,28 @@ export function BasicLayout({ route, activeSubKey, collapsed, onCollapse, onNavi
   const routeKey = `${route}.${activeSubKey.replace(`${route}-`, '').replace(/-/g, '_')}`;
   return (
     <Layout className={['app-shell', route === 'report' ? 'app-shell--report' : '', dataWorkspace ? 'data-workspace-shell' : ''].filter(Boolean).join(' ')}>
-      <HeaderBar workspaceMode={dataWorkspace ? 'data' : 'default'} />
+      <HeaderBar
+        workspaceMode={dataWorkspace ? 'data' : 'default'}
+        onNavigationToggle={onCollapse}
+        navigationOpen={compactNavigation && !collapsed}
+      />
       <Layout className="app-body">
-        <Sidebar collapsed={collapsed} route={route} activeSubKey={activeSubKey} onCollapse={onCollapse} onNavigate={onNavigate} />
+        <Sidebar
+          collapsed={collapsed}
+          compactNavigation={compactNavigation}
+          route={route}
+          activeSubKey={activeSubKey}
+          onCollapse={onCollapse}
+          onNavigate={onNavigate}
+        />
+        {compactNavigation && !collapsed ? (
+          <button
+            type="button"
+            className="mobile-sidebar-backdrop"
+            aria-label="关闭主导航"
+            onClick={onCollapse}
+          />
+        ) : null}
         <Layout className={`main-shell ${dataWorkspace ? 'data-workspace-main' : ''}`}>
           <main className="content-shell">
             {children}

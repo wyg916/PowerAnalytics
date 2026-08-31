@@ -598,95 +598,31 @@ def get_chat_session(session_id: str) -> dict[str, Any]:
     return {"session_id": session_id, "messages": records(messages)}
 
 
-def _report_review_columns() -> set[str]:
-    engine = database_engine()
-    if engine is None:
-        return set()
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_name = 'report_reviews'
-                    """
-                )
-            ).mappings().all()
-        return {str(row.get("column_name")) for row in rows}
-    except Exception:
-        return set()
+def save_report_review(
+    report_id: str,
+    status: str,
+    reviewer: str,
+    comment: str,
+    *,
+    actor,
+) -> dict[str, Any]:
+    from .services.report_governance_service import transition_report
 
-
-def save_report_review(report_id: str, status: str, reviewer: str, comment: str) -> dict[str, Any]:
-    report = report_status(report_id)
-    columns = _report_review_columns()
-    now = datetime.now().isoformat(sep=" ", timespec="seconds")
-    row = {
-        "report_id": report_id,
-        "reviewer": reviewer,
-        "created_at": now,
-    }
-    if "run_id" in columns:
-        row["run_id"] = report.get("run_id") or report_id
-    if "status" in columns:
-        row["status"] = status
-    if "action" in columns:
-        row["action"] = status
-    if "review_comment" in columns:
-        row["review_comment"] = comment
-    if "comment" in columns:
-        row["comment"] = comment
-    if "version" in columns:
-        row["version"] = 1
-    if "updated_at" in columns:
-        row["updated_at"] = now
-    if "metadata_json" in columns:
-        row["metadata_json"] = {"source": "ui_report_review"}
-    _insert_rows("report_reviews", [row])
-    local_path = project_paths().current_dir / "web_report_reviews.json"
-    current = []
-    if local_path.exists():
-        try:
-            current = json.loads(local_path.read_text(encoding="utf-8"))
-        except Exception:
-            current = []
-    current.append(row)
-    _write_local_json("web_report_reviews.json", current)
-    return row
+    action = {
+        "approved": "approve",
+        "rejected": "reject",
+        "published": "publish",
+    }.get(str(status or "").strip().lower(), str(status or "").strip().lower())
+    return transition_report(
+        report_id,
+        action=action,
+        actor=actor,
+        comment=comment,
+        requested_reviewer=reviewer,
+    )
 
 
 def list_report_reviews(report_id: str) -> list[dict[str, Any]]:
-    columns = _report_review_columns()
-    if columns:
-        run_id_expr = "run_id" if "run_id" in columns else "NULL AS run_id"
-        status_expr = "status" if "status" in columns else ("action AS status" if "action" in columns else "NULL AS status")
-        comment_expr = "review_comment" if "review_comment" in columns else ("comment AS review_comment" if "comment" in columns else "NULL AS review_comment")
-        version_expr = "version" if "version" in columns else "NULL AS version"
-        updated_expr = "updated_at" if "updated_at" in columns else "created_at AS updated_at"
-        order_expr = "updated_at" if "updated_at" in columns else "created_at"
-        df = query_dataframe(
-            f"""
-            SELECT report_id, {run_id_expr}, {status_expr}, reviewer,
-                   {comment_expr}, {version_expr}, created_at, {updated_expr}
-            FROM report_reviews
-            WHERE report_id = :report_id
-            ORDER BY {order_expr} DESC
-            """,
-            {"report_id": report_id},
-        )
-    else:
-        df = query_dataframe(
-            "SELECT report_id, run_id, status, reviewer, review_comment, version, created_at, updated_at FROM report_reviews WHERE report_id = :report_id ORDER BY updated_at DESC",
-            {"report_id": report_id},
-        )
-    if not df.empty:
-        return records(df)
-    local = project_paths().current_dir / "web_report_reviews.json"
-    if local.exists():
-        try:
-            rows = json.loads(local.read_text(encoding="utf-8"))
-            return [row for row in rows if row.get("report_id") == report_id]
-        except Exception:
-            return []
-    return []
+    from .services.report_governance_service import list_report_review_events
+
+    return list_report_review_events(report_id)

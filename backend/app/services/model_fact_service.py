@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from typing import Any
 
@@ -204,11 +205,38 @@ class ModelFactService:
     def reject_candidate(self, model_version: str, domain: str, target_name: str) -> dict[str, Any]:
         return self._transition(model_version, domain, target_name, {"candidate", "validating", "validated"}, "rejected")
 
-    def activate_model(self, model_version: str, domain: str, target_name: str) -> dict[str, Any]:
-        return self._activate(model_version, domain, target_name, allowed_states={"validated"})
+    def activate_model(
+        self,
+        model_version: str,
+        domain: str,
+        target_name: str,
+        *,
+        governance_event: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._activate(
+            model_version,
+            domain,
+            target_name,
+            allowed_states={"validated"},
+            governance_event=governance_event,
+        )
 
-    def rollback_active_model(self, model_version: str, domain: str, target_name: str) -> dict[str, Any]:
-        return self._activate(model_version, domain, target_name, allowed_states={"archived"}, require_validated_at=True)
+    def rollback_active_model(
+        self,
+        model_version: str,
+        domain: str,
+        target_name: str,
+        *,
+        governance_event: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._activate(
+            model_version,
+            domain,
+            target_name,
+            allowed_states={"archived"},
+            require_validated_at=True,
+            governance_event=governance_event,
+        )
 
     def deactivate_model(self, model_version: str, domain: str, target_name: str) -> dict[str, Any]:
         return self._transition(
@@ -275,53 +303,113 @@ class ModelFactService:
         *,
         allowed_states: set[str],
         require_validated_at: bool = False,
+        governance_event: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         safe_domain, safe_target = _scope(domain, target_name)
         safe_version = str(model_version or "").strip()
         if self.engine is None:
             raise ModelFactError("模型事实数据库不可用")
-        with self.engine.begin() as conn:
-            target = self._locked_model(conn, safe_version, safe_domain, safe_target)
-            if not target:
-                raise ModelFactError("模型不存在或 domain/target 不匹配")
-            target_fact = _fact(target)
-            if target_fact["status"] == "active" and target_fact["is_active"]:
-                return target_fact
-            if target_fact["status"] not in allowed_states:
-                raise ModelFactError("只有 validated 模型或明确回滚的已验证 archived 模型可以激活")
-            if require_validated_at and not target_fact.get("validated_at"):
-                raise ModelFactError("未验证的 archived 模型不能回滚为 Active")
-            conn.execute(
-                text(
-                    """
-                    UPDATE model_registry
-                    SET status = 'archived', is_active = 0, deactivated_at = CURRENT_TIMESTAMP
-                    WHERE domain = :domain AND target_name = :target_name
-                      AND LOWER(status) = 'active' AND is_active = 1
-                      AND model_version <> :model_version
-                    """
-                ),
-                {"domain": safe_domain, "target_name": safe_target, "model_version": safe_version},
-            )
-            result = conn.execute(
-                text(
-                    """
-                    UPDATE model_registry
-                    SET status = 'active', is_active = 1,
-                        activated_at = CURRENT_TIMESTAMP, deactivated_at = NULL
-                    WHERE model_version = :model_version
-                      AND domain = :domain AND target_name = :target_name
-                    """
-                ),
-                {"model_version": safe_version, "domain": safe_domain, "target_name": safe_target},
-            )
-            if result.rowcount != 1:
-                raise ModelFactError("模型激活失败，事务已回滚")
-            active = conn.execute(
-                text(f"SELECT {_MODEL_COLUMNS} FROM model_registry WHERE model_version = :model_version"),
-                {"model_version": safe_version},
-            ).mappings().first()
-        return _fact(active)
+        event_payload = dict(governance_event or {})
+        if event_payload and not str(event_payload.get("event_id") or "").strip():
+            raise ModelFactError("治理事件 event_id 必须明确提供")
+        try:
+            with self.engine.begin() as conn:
+                target = self._locked_model(conn, safe_version, safe_domain, safe_target)
+                if not target:
+                    raise ModelFactError("模型不存在或 domain/target 不匹配")
+                target_fact = _fact(target)
+                lock_suffix = " FOR UPDATE" if conn.dialect.name == "postgresql" else ""
+                current_active = conn.execute(
+                    text(
+                        "SELECT model_version FROM model_registry "
+                        "WHERE domain = :domain AND target_name = :target_name "
+                        "AND LOWER(status) = 'active' AND is_active = 1 "
+                        "ORDER BY activated_at DESC, created_at DESC LIMIT 1"
+                        + lock_suffix
+                    ),
+                    {"domain": safe_domain, "target_name": safe_target},
+                ).mappings().first()
+                source_version = str((current_active or {}).get("model_version") or "")
+                already_active = bool(
+                    target_fact["status"] == "active" and target_fact["is_active"]
+                )
+                if not already_active:
+                    if target_fact["status"] not in allowed_states:
+                        raise ModelFactError("只有 validated 模型或明确回滚的已验证 archived 模型可以激活")
+                    if require_validated_at and not target_fact.get("validated_at"):
+                        raise ModelFactError("未验证的 archived 模型不能回滚为 Active")
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE model_registry
+                            SET status = 'archived', is_active = 0, deactivated_at = CURRENT_TIMESTAMP
+                            WHERE domain = :domain AND target_name = :target_name
+                              AND LOWER(status) = 'active' AND is_active = 1
+                              AND model_version <> :model_version
+                            """
+                        ),
+                        {"domain": safe_domain, "target_name": safe_target, "model_version": safe_version},
+                    )
+                    result = conn.execute(
+                        text(
+                            """
+                            UPDATE model_registry
+                            SET status = 'active', is_active = 1,
+                                activated_at = CURRENT_TIMESTAMP, deactivated_at = NULL
+                            WHERE model_version = :model_version
+                              AND domain = :domain AND target_name = :target_name
+                            """
+                        ),
+                        {"model_version": safe_version, "domain": safe_domain, "target_name": safe_target},
+                    )
+                    if result.rowcount != 1:
+                        raise ModelFactError("模型激活失败，事务已回滚")
+                if event_payload:
+                    metadata_json = json.dumps(
+                        event_payload.get("metadata") or {},
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    metadata_value = (
+                        "CAST(:metadata_json AS jsonb)"
+                        if conn.dialect.name == "postgresql"
+                        else ":metadata_json"
+                    )
+                    conn.execute(
+                        text(
+                            f"""
+                            INSERT INTO model_governance_events (
+                                event_id, action, target_version, source_version, operator,
+                                reason, status, metadata_json, created_at
+                            ) VALUES (
+                                :event_id, :action, :target_version, :source_version, :operator,
+                                :reason, 'success', {metadata_value}, CURRENT_TIMESTAMP
+                            )
+                            """
+                        ),
+                        {
+                            "event_id": str(event_payload["event_id"]),
+                            "action": str(event_payload.get("action") or "model.activate"),
+                            "target_version": safe_version,
+                            "source_version": source_version,
+                            "operator": str(event_payload.get("operator") or ""),
+                            "reason": str(event_payload.get("reason") or ""),
+                            "metadata_json": metadata_json,
+                        },
+                    )
+                active = conn.execute(
+                    text(f"SELECT {_MODEL_COLUMNS} FROM model_registry WHERE model_version = :model_version"),
+                    {"model_version": safe_version},
+                ).mappings().first()
+        except ModelFactError:
+            raise
+        except Exception as exc:
+            raise ModelFactError("模型切换或治理事件写入失败，事务已回滚") from exc
+        result_fact = _fact(active)
+        result_fact["previous_active_version"] = source_version
+        result_fact["governance_event_id"] = str(event_payload.get("event_id") or "")
+        result_fact["idempotent"] = already_active
+        return result_fact
 
     def _locked_model(self, conn: Any, model_version: str, domain: str, target_name: str) -> Any:
         suffix = " FOR UPDATE" if conn.dialect.name == "postgresql" else ""

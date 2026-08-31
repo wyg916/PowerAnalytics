@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import time
+from pathlib import Path
 
 from openpyxl import load_workbook
 
@@ -31,6 +33,7 @@ AI_SUMMARY_REQUIRED_FILES = [
     "16_滚动回测结果.xlsx",
     "19_业务统计摘要.xlsx",
 ]
+SAFE_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
 
 def _xlsx_data_rows(path) -> int:
@@ -108,6 +111,8 @@ def validate_skip_prediction_inputs(paths, log) -> None:
 
 
 def build_sequence(args: argparse.Namespace) -> list[str]:
+    if args.retrain_model:
+        return ["01_run_prediction.py"]
     if args.skip_prediction:
         return [item for item in SCRIPT_SEQUENCE if item != "01_run_prediction.py"]
     sequence = SCRIPT_SEQUENCE.copy()
@@ -116,6 +121,20 @@ def build_sequence(args: argparse.Namespace) -> list[str]:
     if args.refresh_data and not args.skip_prediction and not args.prediction_report_only:
         sequence.insert(1, DATA_REFRESH_SCRIPT)
     return sequence
+
+
+def configure_retrain_workspace(config: dict, run_id: str) -> Path:
+    if not SAFE_RUN_ID_PATTERN.fullmatch(run_id):
+        raise SystemExit("显式重训 run_id 含非法字符，已拒绝创建运行目录")
+    runtime_root = Path(__file__).resolve().parent / ".codex_tmp" / "model_training" / run_id
+    if runtime_root.exists():
+        raise SystemExit(f"显式重训运行目录已存在，拒绝覆盖：{runtime_root}")
+    result_dir = runtime_root / "results"
+    paths_config = config.setdefault("paths", {})
+    paths_config["data_dir"] = str(runtime_root / "input")
+    paths_config["result_dir"] = str(result_dir)
+    paths_config["result_table_dir"] = str(result_dir / "结果表")
+    return runtime_root
 
 
 def main() -> None:
@@ -128,18 +147,22 @@ def main() -> None:
     parser.add_argument("--model-auto-optimize", action="store_true", help="执行误差记忆、退化判断和必要时自动重训")
     args = parser.parse_args()
 
+    run_id = os.environ.get("PIPELINE_RUN_ID", "").strip() or now_compact()
+    run_mode = build_run_mode(args)
+    run_started_at = now_text()
     config = load_config()
+    retrain_runtime_root = configure_retrain_workspace(config, run_id) if args.retrain_model else None
     paths = get_pipeline_paths(config)
     log, log_path = setup_run_logger(paths.log_dir, "main_daily_run")
 
-    run_id = now_compact()
-    run_mode = build_run_mode(args)
-    run_started_at = now_text()
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PIPELINE_RUN_ID"] = run_id
     env["PIPELINE_RUN_MODE"] = run_mode
     env["PIPELINE_RUN_STARTED_AT"] = run_started_at
+    if retrain_runtime_root is not None:
+        env["PIPELINE_DATA_DIR"] = str(paths.data_dir)
+        env["PIPELINE_RESULT_DIR"] = str(paths.result_dir)
     if args.fast_forecast:
         env["PIPELINE_FORECAST_MODE"] = "fast"
 
@@ -156,9 +179,13 @@ def main() -> None:
     if args.skip_prediction:
         validate_skip_prediction_inputs(paths, log)
 
-    db_ok = disable_database_if_unavailable(config, log=log)
-    if not db_ok:
-        log("数据库同步、模型注册和追踪落库将被跳过。")
+    if args.retrain_model:
+        config.setdefault("database", {})["enabled"] = False
+        log("显式重训已禁用旧 MySQL 同步；输入读取与 Candidate 登记使用独立受限 PostgreSQL 身份。")
+    else:
+        db_ok = disable_database_if_unavailable(config, log=log)
+        if not db_ok:
+            log("数据库同步、模型注册和追踪落库将被跳过。")
 
     total_start = time.perf_counter()
     save_pipeline_event(config, "main_daily_run", "started", f"总控开始，模式：{run_mode}")

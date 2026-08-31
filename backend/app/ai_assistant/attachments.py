@@ -54,7 +54,9 @@ def _safe_name(value: str) -> str:
 
 def _scope(identity: IdentityContext) -> Path:
     identity.require_valid(require_session=False)
-    digest = hashlib.sha256(f"{identity.tenant_id}\0{identity.user_id}".encode()).hexdigest()[:32]
+    digest = hashlib.sha256(
+        f"{identity.tenant_id}\0{identity.workspace_id}\0{identity.user_id}".encode()
+    ).hexdigest()[:32]
     return ROOT / digest
 
 
@@ -212,7 +214,8 @@ def upload_attachment(identity: IdentityContext, *, session_id: str, file_name: 
         "media_type": declared, "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest(),
         "status": "uploading", "parser": None, "created_at": now.isoformat(),
         "expires_at": (now + timedelta(hours=int(os.environ.get("AI_ATTACHMENT_TTL_HOURS", "24")))).isoformat(),
-        "tenant_id": identity.tenant_id, "user_id": identity.user_id, "error": None, "chunks": [], "properties": {},
+        "tenant_id": identity.tenant_id, "workspace_id": identity.workspace_id,
+        "user_id": identity.user_id, "error": None, "chunks": [], "properties": {},
     }
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(content)
@@ -237,14 +240,26 @@ def upload_attachment(identity: IdentityContext, *, session_id: str, file_name: 
         raise
 
 
-def get_attachment(identity: IdentityContext, attachment_id: str, *, session_id: str | None = None) -> dict[str, Any]:
+def _require_session_id(session_id: str) -> str:
+    normalized = str(session_id or "").strip()
+    if not SESSION_RE.fullmatch(normalized):
+        raise AttachmentError("VALIDATION_FAILED", "session_id 无效。", status_code=422)
+    return normalized
+
+
+def get_attachment(identity: IdentityContext, attachment_id: str, *, session_id: str) -> dict[str, Any]:
+    session_id = _require_session_id(session_id)
     data_path, meta_path = _paths(identity, attachment_id)
     if not meta_path.is_file():
         raise AttachmentError("ATTACHMENT_NOT_FOUND", "附件不存在。", status_code=404)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    if meta.get("tenant_id") != identity.tenant_id or meta.get("user_id") != identity.user_id:
+    if (
+        meta.get("tenant_id") != identity.tenant_id
+        or meta.get("workspace_id") != identity.workspace_id
+        or meta.get("user_id") != identity.user_id
+    ):
         raise AttachmentError("PERMISSION_DENIED", "无权访问该附件。", status_code=403)
-    if session_id and meta.get("session_id") != session_id:
+    if meta.get("session_id") != session_id:
         raise AttachmentError("PERMISSION_DENIED", "附件不属于当前会话。", status_code=403)
     if datetime.fromisoformat(meta["expires_at"]) <= datetime.now(timezone.utc) and meta.get("status") not in TERMINAL_STATUSES:
         _discard_attachment_payload(
@@ -257,8 +272,8 @@ def get_attachment(identity: IdentityContext, attachment_id: str, *, session_id:
     return meta
 
 
-def delete_attachment(identity: IdentityContext, attachment_id: str) -> dict[str, Any]:
-    meta = get_attachment(identity, attachment_id)
+def delete_attachment(identity: IdentityContext, attachment_id: str, *, session_id: str) -> dict[str, Any]:
+    meta = get_attachment(identity, attachment_id, session_id=session_id)
     data_path, meta_path = _paths(identity, attachment_id)
     if meta.get("status") not in {"cancelled", "deleted"}:
         terminal_status = "cancelled" if meta.get("status") in {"uploading", "parsing"} else "deleted"

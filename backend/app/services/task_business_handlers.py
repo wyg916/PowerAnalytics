@@ -336,6 +336,8 @@ def run_report_daily(payload: dict[str, Any], context: TaskStepLogger | None = N
     report_date = str(payload.get("report_date") or "") or None
     region = str(payload.get("region") or "模型覆盖市场")
     report_type = str(payload.get("report_type") or "daily")
+    source_report_id = str(payload.get("source_report_id") or "").strip() or None
+    requested_by = str(payload.get("requested_by") or "").strip()
     if context:
         context.log(
             "parse",
@@ -350,6 +352,8 @@ def run_report_daily(payload: dict[str, Any], context: TaskStepLogger | None = N
         report_type=report_type,
         region=region,
         report_date=report_date,
+        source_report_id=source_report_id,
+        requested_by=requested_by,
     )
     if context:
         context.log("generate", "生成可追溯运营决策报告", progress=72, metadata={"report_id": result["report_id"], "run_id": result["run_id"]})

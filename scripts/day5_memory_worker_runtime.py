@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.phase4_precheck_runtime import _pid_active, _terminate_pid, configure_runtime
+from backend.app.core.redaction import redact_text
 
 
 def paths() -> dict[str, Path]:
@@ -52,32 +53,37 @@ def status() -> dict:
     }
 
 
-def run() -> int:
+def run_once() -> dict:
     from sqlalchemy import text
     from backend.app.ai_assistant.memory.enterprise_memory import _engine
     from backend.app.ai_assistant.memory.lifecycle import process_outbox_batch
 
     value = paths()
     value["runtime"].mkdir(parents=True, exist_ok=True)
+    report = {"ok": False, "checked_at": datetime.now(timezone.utc).isoformat(), "last_batch": []}
+    try:
+        with _engine().connect() as connection:
+            report["schema_contract_ready"] = bool(connection.execute(
+                text(
+                    "SELECT to_regclass('ai_memory_deletion_jobs') IS NOT NULL "
+                    "AND to_regprocedure('ai_memory_purge(character varying,character varying)') IS NOT NULL"
+                )
+            ).scalar_one())
+        report["alembic_head"] = "not_readable_by_runtime_identity"
+        if not report["schema_contract_ready"]:
+            raise RuntimeError("day5_schema_contract_unavailable")
+        report["last_batch"] = process_outbox_batch(limit=20)
+        report["ok"] = True
+        report["error"] = ""
+    except Exception as exc:
+        report["error"] = f"{exc.__class__.__name__}:{redact_text(str(exc))[:160]}"
+    value["heartbeat"].write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
+
+def run() -> int:
     while True:
-        report = {"ok": False, "checked_at": datetime.now(timezone.utc).isoformat(), "last_batch": []}
-        try:
-            with _engine().connect() as connection:
-                report["schema_contract_ready"] = bool(connection.execute(
-                    text(
-                        "SELECT to_regclass('ai_memory_deletion_jobs') IS NOT NULL "
-                        "AND to_regprocedure('ai_memory_purge(character varying,character varying)') IS NOT NULL"
-                    )
-                ).scalar_one())
-            report["alembic_head"] = "not_readable_by_runtime_identity"
-            if not report["schema_contract_ready"]:
-                raise RuntimeError("day5_schema_contract_unavailable")
-            report["last_batch"] = process_outbox_batch(limit=20)
-            report["ok"] = True
-            report["error"] = ""
-        except Exception as exc:
-            report["error"] = f"{exc.__class__.__name__}:{str(exc)[:160]}"
-        value["heartbeat"].write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        run_once()
         time.sleep(2)
 
 
@@ -126,12 +132,20 @@ def stop() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime-config", action="append", type=Path, default=[])
-    parser.add_argument("command", choices=("start", "status", "stop", "run"))
+    parser.add_argument("command", choices=("start", "status", "stop", "run", "once"))
     args = parser.parse_args()
     configure_runtime(args.runtime_config)
     if args.command == "run":
         return run()
-    report = start(args.runtime_config) if args.command == "start" else stop() if args.command == "stop" else status()
+    report = (
+        start(args.runtime_config)
+        if args.command == "start"
+        else stop()
+        if args.command == "stop"
+        else run_once()
+        if args.command == "once"
+        else status()
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     return 0 if report["ok"] else 1
 

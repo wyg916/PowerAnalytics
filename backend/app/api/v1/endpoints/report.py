@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -12,11 +12,19 @@ from ....platform_services import list_report_reviews, save_report_review
 from ....repositories.audit_repository import write_audit_log
 from ....repositories.report_repository import list_reports_from_postgres, report_summary_from_postgres
 from ....schemas import ReportGenerateRequest, ReviewRequest
+from ....services.report_governance_service import ReportGovernanceError
 from ....source_contract import SourceType, attach_source_meta, source_meta
 from ....workers.dispatcher import enqueue_task
 
 
 router = APIRouter()
+
+
+def _raise_governance_error(exc: ReportGovernanceError) -> NoReturn:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={"code": exc.code, "message": str(exc)},
+    ) from exc
 
 
 def _with_report_meta(payload: dict, *, historical: bool = False) -> dict:
@@ -116,17 +124,25 @@ def report_summary(_: Annotated[CurrentUser, Depends(require_permission("report:
 
 
 @router.get("/api/reports/latest")
-def report_latest() -> dict:
+def report_latest(
+    _: Annotated[CurrentUser, Depends(require_permission("report:read"))],
+) -> dict:
     return _with_report_meta(report_status())
 
 
 @router.get("/api/reports/{report_id}")
-def report_detail(report_id: str) -> dict:
+def report_detail(
+    report_id: str,
+    _: Annotated[CurrentUser, Depends(require_permission("report:read"))],
+) -> dict:
     return _with_report_meta(report_status(report_id), historical=True)
 
 
 @router.get("/api/reports/{report_id}/download")
-def report_download(report_id: str):
+def report_download(
+    report_id: str,
+    _: Annotated[CurrentUser, Depends(require_permission("report:download"))],
+):
     report = report_status(report_id)
     path = Path(str(report.get("report_path") or ""))
     if not path.is_file():
@@ -145,8 +161,30 @@ def report_regenerate(
     request: Request,
     user: Annotated[CurrentUser, Depends(require_permission("report:generate"))],
 ) -> dict:
+    source = report_status(report_id)
+    if source.get("report_id") != report_id:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if str(source.get("status") or "").lower() != "rejected":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "report_regeneration_requires_rejected",
+                "message": "只有已驳回报告可以重新生成新版本。",
+            },
+        )
+    metadata = source.get("metadata") or {}
     try:
-        result = enqueue_task("report_generate", {"report_id": report_id})
+        result = enqueue_task(
+            "report_generate",
+            {
+                "run_id": source.get("run_id"),
+                "report_type": source.get("report_type") or metadata.get("report_type") or "daily",
+                "region": metadata.get("region") or "模型覆盖市场",
+                "source_report_id": report_id,
+                "regenerate": True,
+                "requested_by": user.username,
+            },
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     write_audit_log(
@@ -155,9 +193,14 @@ def report_regenerate(
         resource_type="report",
         resource_id=report_id,
         ip_address=request.client.host if request.client else "",
-        metadata=result,
+        metadata={"source_report_id": report_id, "task": result},
     )
-    return result
+    return {
+        **result,
+        "accepted": True,
+        "source_report_id": report_id,
+        "operation": "report_regenerate_new_version",
+    }
 
 
 @router.post("/api/reports/{report_id}/approve")
@@ -167,8 +210,17 @@ def report_approve(
     request: Request,
     user: Annotated[CurrentUser, Depends(require_permission("report:review"))],
 ) -> dict:
-    result = save_report_review(report_id, "approved", payload.reviewer, payload.review_comment)
-    write_audit_log(
+    try:
+        result = save_report_review(
+            report_id,
+            "approved",
+            payload.reviewer,
+            payload.review_comment,
+            actor=user,
+        )
+    except ReportGovernanceError as exc:
+        _raise_governance_error(exc)
+    audit_persisted = write_audit_log(
         action="report.approve",
         user=user,
         resource_type="report",
@@ -176,7 +228,7 @@ def report_approve(
         ip_address=request.client.host if request.client else "",
         metadata={"reviewer": payload.reviewer, "result": result},
     )
-    return result
+    return {**result, "audit_log_persisted": audit_persisted}
 
 
 @router.post("/api/reports/{report_id}/reject")
@@ -186,10 +238,17 @@ def report_reject(
     request: Request,
     user: Annotated[CurrentUser, Depends(require_permission("report:review"))],
 ) -> dict:
-    if not payload.review_comment.strip():
-        raise HTTPException(status_code=400, detail="驳回报告必须填写审核意见")
-    result = save_report_review(report_id, "rejected", payload.reviewer, payload.review_comment)
-    write_audit_log(
+    try:
+        result = save_report_review(
+            report_id,
+            "rejected",
+            payload.reviewer,
+            payload.review_comment,
+            actor=user,
+        )
+    except ReportGovernanceError as exc:
+        _raise_governance_error(exc)
+    audit_persisted = write_audit_log(
         action="report.reject",
         user=user,
         resource_type="report",
@@ -198,7 +257,7 @@ def report_reject(
         ip_address=request.client.host if request.client else "",
         metadata={"reviewer": payload.reviewer, "comment": payload.review_comment, "result": result},
     )
-    return result
+    return {**result, "audit_log_persisted": audit_persisted}
 
 
 @router.post("/api/reports/{report_id}/publish")
@@ -206,10 +265,19 @@ def report_publish(
     report_id: str,
     payload: ReviewRequest,
     request: Request,
-    user: Annotated[CurrentUser, Depends(require_permission("report:review"))],
+    user: Annotated[CurrentUser, Depends(require_permission("report:publish"))],
 ) -> dict:
-    result = save_report_review(report_id, "published", payload.reviewer, payload.review_comment)
-    write_audit_log(
+    try:
+        result = save_report_review(
+            report_id,
+            "published",
+            payload.reviewer,
+            payload.review_comment,
+            actor=user,
+        )
+    except ReportGovernanceError as exc:
+        _raise_governance_error(exc)
+    audit_persisted = write_audit_log(
         action="report.publish",
         user=user,
         resource_type="report",
@@ -217,9 +285,16 @@ def report_publish(
         ip_address=request.client.host if request.client else "",
         metadata={"reviewer": payload.reviewer, "result": result},
     )
-    return result
+    return {**result, "audit_log_persisted": audit_persisted}
 
 
 @router.get("/api/reports/{report_id}/reviews")
-def report_reviews(report_id: str) -> dict:
-    return {"report_id": report_id, "reviews": list_report_reviews(report_id)}
+def report_reviews(
+    report_id: str,
+    _: Annotated[CurrentUser, Depends(require_permission("report:review"))],
+) -> dict:
+    try:
+        reviews = list_report_reviews(report_id)
+    except ReportGovernanceError as exc:
+        _raise_governance_error(exc)
+    return {"report_id": report_id, "reviews": reviews}

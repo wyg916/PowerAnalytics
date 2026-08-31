@@ -164,14 +164,20 @@ def execute_chatbi_analysis(
         raise ChatBIServiceError("analysis_audit_unavailable", "分析审计记录不可用。", status_code=503) from exc
     if not validation.valid:
         if validation.status == "clarification_required":
+            clarification_question = (
+                server_plan.clarification_question
+                or "请补充要分析的业务指标、时间范围或比较对象。"
+            )
             return {
                 "available": False,
                 "state": "clarification_required",
+                "answer": clarification_question,
+                "answer_source": "clarification",
                 "analysis_plan": server_plan.model_dump(mode="json"),
                 "validation": validation.public_dict(),
                 "clarification": {
                     "required": True,
-                    "question": server_plan.clarification_question,
+                    "question": clarification_question,
                 },
                 "lineage": {
                     "analysis_plan_id": server_plan.analysis_plan_id,
@@ -186,14 +192,17 @@ def execute_chatbi_analysis(
             }
         if not generated_plan:
             raise ChatBIServiceError("analysis_plan_invalid", "AnalysisPlan 未通过验证。", status_code=422)
+        unavailable_message = "当前分析条件未能形成可执行计划，请补充指标、时间范围或比较对象后重试。"
         return {
             "available": False,
             "state": "unavailable",
+            "answer": unavailable_message,
+            "answer_source": "error",
             "analysis_plan": server_plan.model_dump(mode="json"),
             "validation": validation.public_dict(),
             "error": {
                 "code": "PLANNER_INVALID",
-                "message": "当前分析条件未能形成可执行计划，请补充指标、时间范围或比较对象后重试。",
+                "message": unavailable_message,
             },
             "lineage": {
                 "analysis_plan_id": server_plan.analysis_plan_id,
@@ -230,6 +239,8 @@ def execute_chatbi_analysis(
     return {
         "available": result.state == "success",
         "state": result.state,
+        "answer": narrative.text,
+        "answer_source": "grounded_narrative",
         "analysis_plan": server_plan.model_dump(mode="json"),
         "validation": validation.public_dict(),
         "result_dataset": result.model_dump(mode="json", by_alias=True),
