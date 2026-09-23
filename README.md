@@ -47,7 +47,7 @@
 <a id="product-demo"></a>
 ## 项目介绍视频
 
-https://github.com/user-attachments/assets/149a3576-f137-4806-a25f-cfa50092647b
+<!-- GitHub-compatible replacement video is uploaded by the fix pull request. -->
 
 > 2 分钟真实产品演示。使用 GitHub 原生视频附件播放器，点击播放、不自动下载；720p、30fps、H.264/AAC，含中文配音与黄色加粗字幕。
 
