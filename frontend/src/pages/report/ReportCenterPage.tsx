@@ -113,7 +113,7 @@ function buildPriceOption(rows: any[], review = false) {
 }
 
 export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { canPerformAction, user } = useAuth();
   const isReviewPage = activeSubKey === 'report-review' || activeSubKey === 'report-publish';
   const pageTitle = isReviewPage
@@ -133,7 +133,10 @@ export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
   const permissions = {
     canDownload: canPerformAction('report:download'),
     canGenerate: canPerformAction('report.generate'),
-    canReview: canPerformAction('report:review')
+    canReview: canPerformAction('report:review'),
+    canApprove: canPerformAction('report.approve'),
+    canReject: canPerformAction('report.reject'),
+    canPublish: canPerformAction('report.publish')
   };
 
   async function loadData(nextKeyword = keyword, nextPage = reportPage, nextType = reportType, nextStatus = reportStatus) {
@@ -184,6 +187,14 @@ export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
       : visibleReports.find((item: any) => item.report_id === selectedId) || visibleReports[0] || (!reviewer ? data.activeReport : null),
     [visibleReports, reviewer, selectedId, data.activeReport]
   );
+  const activeStatus = String(activeReport?.status || '').toLowerCase();
+  const isReviewable = ['draft', 'ready', 'pending', 'reviewing'].includes(activeStatus);
+  const actionState = {
+    canApproveCurrent: permissions.canApprove && isReviewable,
+    canRejectCurrent: permissions.canReject && isReviewable,
+    canPublishCurrent: permissions.canPublish && activeStatus === 'approved' && !activeReport?.isStale,
+    canRegenerateCurrent: permissions.canGenerate && activeStatus === 'rejected'
+  };
   useEffect(() => {
     const selected = visibleReports.find((item: any) => item.report_id === selectedId);
     if (!selected) return;
@@ -230,34 +241,81 @@ export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
 
   async function generateReport() {
     const res = await api.generateReport();
-    message.success(`报告生成任务已启动：${res.task_id || res.run_id || 'report_generate'}`);
+    message.success(`报告生成任务已创建：${res.task_id || res.run_id || 'report_generate'}`);
     await loadData();
   }
 
   async function regenerateReport() {
     if (!activeReport?.report_id) return;
     const res = await api.regenerateReport(activeReport.report_id);
-    message.success(`重新生成任务已启动：${res.task_id || res.run_id || activeReport.report_id}`);
+    message.success(`重新生成任务已接受：${res.task_id || res.run_id || activeReport.report_id}`);
     await loadData();
+  }
+
+  function confirmRegenerate() {
+    if (!actionState.canRegenerateCurrent) {
+      message.warning('只有已驳回报告且具备生成权限时才能重新生成新版本');
+      return;
+    }
+    modal.confirm({
+      title: '确认重新生成报告新版本？',
+      content: `来源报告：${activeReport?.report_id || '--'}。操作只创建异步任务，执行结果需在任务中心核验。`,
+      okText: '创建任务',
+      cancelText: '取消',
+      onOk: regenerateReport
+    });
   }
 
   async function review(action: 'approve' | 'reject' | 'publish') {
     if (!activeReport?.report_id) return;
-    if (action === 'reject' && !reviewComment.trim()) {
-      message.warning('驳回报告需要填写审核意见');
+    if (action !== 'publish' && !reviewComment.trim()) {
+      message.warning('通过或驳回报告必须填写审核意见');
       return;
     }
     if (!user?.username) {
       message.error('当前登录身份不可用，无法写入可追溯审核记录');
       return;
     }
-    const payload = { reviewer: user.username, review_comment: reviewComment || (action === 'approve' ? '审核通过' : '发布归档') };
-    if (action === 'approve') await api.approveReport(activeReport.report_id, payload);
-    if (action === 'reject') await api.rejectReport(activeReport.report_id, payload);
-    if (action === 'publish') await api.publishReport(activeReport.report_id, payload);
-    message.success('报告状态已更新');
+    const payload = { reviewer: user.username, review_comment: reviewComment.trim() };
+    let result: any;
+    if (action === 'approve') result = await api.approveReport(activeReport.report_id, payload);
+    if (action === 'reject') result = await api.rejectReport(activeReport.report_id, payload);
+    if (action === 'publish') result = await api.publishReport(activeReport.report_id, payload);
+    const statusLabel = action === 'approve' ? '已通过' : action === 'reject' ? '已驳回' : '已发布';
+    if (result?.audit_log_persisted === false) {
+      message.warning(`报告${statusLabel}，治理事件已入库，但中央审计日志写入失败`);
+    } else if (result?.idempotent) {
+      message.info(`报告已经处于“${statusLabel}”状态，本次未重复写入`);
+    } else {
+      message.success(`报告状态已更新为“${statusLabel}”`);
+    }
     setReviewComment('');
     await loadData();
+  }
+
+  function confirmReview(action: 'approve' | 'reject' | 'publish') {
+    const allowed = action === 'approve'
+      ? actionState.canApproveCurrent
+      : action === 'reject'
+        ? actionState.canRejectCurrent
+        : actionState.canPublishCurrent;
+    if (!allowed) {
+      message.warning('当前报告状态或当前身份不允许执行此操作');
+      return;
+    }
+    if (action !== 'publish' && !reviewComment.trim()) {
+      message.warning('通过或驳回报告必须填写审核意见');
+      return;
+    }
+    const actionLabel = action === 'approve' ? '通过' : action === 'reject' ? '驳回' : '发布';
+    modal.confirm({
+      title: `确认${actionLabel}这份报告？`,
+      content: `报告：${activeReport?.title || activeReport?.report_id || '--'}。该操作将写入状态机与不可省略的治理事件。`,
+      okText: `确认${actionLabel}`,
+      cancelText: '取消',
+      okButtonProps: { danger: action === 'reject' },
+      onOk: () => review(action)
+    });
   }
 
   async function downloadReport() {
@@ -358,12 +416,13 @@ export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
           reviews={data.reviews || []}
           reviewComment={reviewComment}
           setReviewComment={setReviewComment}
-          onApprove={() => review('approve')}
-          onReject={() => review('reject')}
-          onPublish={() => review('publish')}
-          onRegenerate={regenerateReport}
+          onApprove={() => confirmReview('approve')}
+          onReject={() => confirmReview('reject')}
+          onPublish={() => confirmReview('publish')}
+          onRegenerate={confirmRegenerate}
           onDownload={downloadReport}
           permissions={permissions}
+          actionState={actionState}
           onFullscreenError={() => message.error('当前浏览器未允许全屏显示')}
         />
       ) : showContent ? (
@@ -380,10 +439,11 @@ export function ReportCenterPage({ activeSubKey, onSubNavigate }: PageProps) {
           previewMetrics={data.previewMetrics || []}
           risks={data.risks || []}
           onDownload={downloadReport}
-          onRegenerate={regenerateReport}
+          onRegenerate={confirmRegenerate}
           onCopyLink={copyLink}
-          onReview={() => onSubNavigate?.('report-review')}
+          onReview={() => onSubNavigate?.(permissions.canApprove || permissions.canReject ? 'report-review' : 'report-publish')}
           permissions={permissions}
+          actionState={actionState}
         />
       ) : null}
     </div>
@@ -511,7 +571,7 @@ function ReportStatusKpiRow({ items, loading }: { items: any[]; loading: boolean
   );
 }
 
-function ReportPreviewView({ reports, total, page, onPageChange, onReload, activeReport, selectedId, setSelectedId, curve, previewMetrics, risks, onDownload, onRegenerate, onCopyLink, onReview, permissions }: any) {
+function ReportPreviewView({ reports, total, page, onPageChange, onReload, activeReport, selectedId, setSelectedId, curve, previewMetrics, risks, onDownload, onRegenerate, onCopyLink, onReview, permissions, actionState }: any) {
   const [summaryExpanded, setSummaryExpanded] = useState(false);
   return (
     <div className="report-main-grid report-workspace-grid">
@@ -558,14 +618,14 @@ function ReportPreviewView({ reports, total, page, onPageChange, onReload, activ
         </div>
       </SectionCard>
       <div className="report-workspace-right report-side-stack">
-        <QuickActions onDownload={onDownload} onRegenerate={onRegenerate} onCopyLink={onCopyLink} onReview={onReview} permissions={permissions} />
+        <QuickActions onDownload={onDownload} onRegenerate={onRegenerate} onCopyLink={onCopyLink} onReview={onReview} permissions={permissions} actionState={actionState} />
         <div className="report-side-scroll"><PublishTimeline report={activeReport} /></div>
       </div>
     </div>
   );
 }
 
-function ReviewPublishView({ reports, total, page, onPageChange, onReload, activeReport, selectedId, setSelectedId, curve, previewMetrics, reviews, reviewComment, setReviewComment, onApprove, onReject, onPublish, onRegenerate, onDownload, permissions, onFullscreenError }: any) {
+function ReviewPublishView({ reports, total, page, onPageChange, onReload, activeReport, selectedId, setSelectedId, curve, previewMetrics, reviews, reviewComment, setReviewComment, onApprove, onReject, onPublish, onRegenerate, onDownload, permissions, actionState, onFullscreenError }: any) {
   const previewRef = useRef<HTMLElement | null>(null);
   return (
     <div className="report-review-grid report-workspace-grid">
@@ -602,12 +662,12 @@ function ReviewPublishView({ reports, total, page, onPageChange, onReload, activ
         <SectionCard title="审核操作区" className="report-review-action-card">
           <div className="report-review-tabs"><b>待审核</b><span>待发布</span></div>
           <label className="report-comment-label">审核意见 <i>*</i></label>
-          <Input.TextArea rows={5} maxLength={500} showCount value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="请输入审核意见（选填）..." />
+          <Input.TextArea rows={5} maxLength={500} showCount value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} placeholder="通过或驳回时必须填写；发布时可选" />
           <div className="report-review-actions">
-            {permissions.canReview ? <Button type="primary" onClick={onApprove}>通过</Button> : null}
-            {permissions.canReview ? <Button danger onClick={onReject}>驳回</Button> : null}
-            {permissions.canGenerate ? <Button onClick={onRegenerate}>重新生成</Button> : null}
-            {permissions.canReview ? <Button onClick={onPublish}>发布报告</Button> : null}
+            {permissions.canApprove ? <Tooltip title={actionState.canApproveCurrent ? '' : '仅待审核状态允许通过'}><span><Button type="primary" disabled={!actionState.canApproveCurrent} onClick={onApprove}>通过</Button></span></Tooltip> : null}
+            {permissions.canReject ? <Tooltip title={actionState.canRejectCurrent ? '' : '仅待审核状态允许驳回'}><span><Button danger disabled={!actionState.canRejectCurrent} onClick={onReject}>驳回</Button></span></Tooltip> : null}
+            {permissions.canGenerate ? <Tooltip title={actionState.canRegenerateCurrent ? '' : '仅已驳回报告允许重新生成'}><span><Button disabled={!actionState.canRegenerateCurrent} onClick={onRegenerate}>重新生成</Button></span></Tooltip> : null}
+            {permissions.canPublish ? <Tooltip title={actionState.canPublishCurrent ? '' : activeReport?.isStale ? '历史过期报告不能发布' : '仅已通过报告允许发布'}><span><Button disabled={!actionState.canPublishCurrent} onClick={onPublish}>发布报告</Button></span></Tooltip> : null}
           </div>
         </SectionCard>
         <div className="report-side-scroll">
@@ -646,16 +706,16 @@ function MiniMetric({ label, value, unit }: any) {
   );
 }
 
-function QuickActions({ onDownload, onRegenerate, onCopyLink, onReview, permissions }: any) {
+function QuickActions({ onDownload, onRegenerate, onCopyLink, onReview, permissions, actionState }: any) {
   const disabledTip = '当前业务流程不支持此操作';
   return (
     <SectionCard title="快捷操作" className="report-quick-card">
       <div className="report-action-grid">
-        {permissions.canDownload ? <Button icon={<FilePdfOutlined />} onClick={onDownload}>下载报告（PDF）</Button> : null}
+        {permissions.canDownload ? <Button icon={<FilePdfOutlined />} onClick={onDownload}>下载报告</Button> : null}
         <Tooltip title={disabledTip}><Button icon={<FileExcelOutlined />} disabled>下载报告（Excel）</Button></Tooltip>
         <Button icon={<EyeOutlined />} onClick={() => document.querySelector('.report-preview-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>查看详情</Button>
-        {permissions.canReview ? <Button type="primary" icon={<SendOutlined />} onClick={onReview}>进入审核</Button> : null}
-        {permissions.canGenerate ? <Button icon={<SyncOutlined />} onClick={onRegenerate}>重新生成</Button> : null}
+        {permissions.canApprove || permissions.canReject || permissions.canPublish ? <Button type="primary" icon={<SendOutlined />} onClick={onReview}>进入审核</Button> : null}
+        {permissions.canGenerate ? <Tooltip title={actionState.canRegenerateCurrent ? '' : '仅已驳回报告允许重新生成'}><span><Button icon={<SyncOutlined />} disabled={!actionState.canRegenerateCurrent} onClick={onRegenerate}>重新生成</Button></span></Tooltip> : null}
         <Button icon={<CopyOutlined />} onClick={onCopyLink}>复制报告链接</Button>
         <Tooltip title={disabledTip}><Button icon={<InboxOutlined />} disabled>归档报告</Button></Tooltip>
         <Tooltip title={disabledTip}><Button danger icon={<DeleteOutlined />} disabled>删除报告</Button></Tooltip>

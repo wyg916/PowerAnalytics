@@ -132,7 +132,9 @@ def required_permission(method: str, path: str) -> str:
     if path.startswith("/api/reports"):
         if path.endswith("/download"):
             return "report:download"
-        if path.endswith("/reviews") or path.endswith(("/approve", "/reject", "/publish")):
+        if path.endswith("/publish"):
+            return "report:publish"
+        if path.endswith("/reviews") or path.endswith(("/approve", "/reject")):
             return "report:review"
         if method != "GET":
             return "report:generate"
@@ -212,6 +214,7 @@ def _risk(permission: str, anonymous: bool, write: bool) -> str:
         "model:manage",
         "model:read",
         "report:download",
+        "report:publish",
         "report:review",
         "security:read",
         "settings:read",

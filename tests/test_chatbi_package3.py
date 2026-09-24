@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -84,6 +85,46 @@ def test_result_schema_serializes_under_required_schema_key() -> None:
     payload = result().model_dump(mode="json", by_alias=True)
     assert "schema" in payload and "schema_" not in payload
     assert payload["schema"][1]["unit"] == "元/MWh"
+
+
+def test_service_exposes_display_answer_for_result_and_clarification(monkeypatch) -> None:
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield object()
+
+    service_path = "backend.app.chatbi.service"
+    monkeypatch.setattr(f"{service_path}._insert_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(f"{service_path}._finish_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        f"{service_path}.execute_result_dataset",
+        lambda server_plan, *_args, **_kwargs: result().model_copy(
+            update={"analysis_plan_id": server_plan.analysis_plan_id}
+        ),
+    )
+    scoped_identity = IdentityContext(
+        tenant_id="tenant_a", workspace_id="workspace_a", user_id="user_a",
+        role_ids=("analyst",), agent_id="chatbi", session_id="session_a", run_id="run_a",
+    )
+    permissions = ("assistant:use", "data:read", "model:read")
+
+    answered = execute_chatbi_analysis(
+        question="按市场分析平均日前电价", plan=plan(), identity=scoped_identity,
+        permissions=permissions, engine=FakeEngine(),
+    )
+    assert answered["answer"] == answered["narrative"]["text"]
+    assert answered["answer"] != answered["state"]
+    assert answered["answer_source"] == "grounded_narrative"
+
+    clarification = execute_chatbi_analysis(
+        question="分析一下", plan=AnalysisPlan.model_validate({
+            "clarification_required": True,
+            "clarification_question": "请说明要分析的指标和时间范围。",
+        }), identity=scoped_identity.with_session("session_b", run_id="run_b"),
+        permissions=permissions, engine=FakeEngine(),
+    )
+    assert clarification["answer"] == clarification["clarification"]["question"]
+    assert clarification["answer_source"] == "clarification"
 
 
 @pytest.mark.skipif(

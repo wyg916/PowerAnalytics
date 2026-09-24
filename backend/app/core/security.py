@@ -125,9 +125,15 @@ def permissions_for_role(role: str) -> list[str]:
     except Exception:
         configured = None
     if configured is not None:
-        values = sorted({str(value) for value in (configured.get("permissions") or []) if str(value)})
-        if normalized != "admin" or "*" in values:
-            return values
+        values = {
+            str(value)
+            for value in (configured.get("permissions") or [])
+            if str(value)
+        }
+        ceiling = ROLE_PERMISSIONS.get(normalized, set())
+        if normalized == "admin":
+            return ["*"] if "*" in values else []
+        return sorted(values & ceiling)
     return sorted(ROLE_PERMISSIONS.get(normalized, set()))
 
 

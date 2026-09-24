@@ -7,13 +7,14 @@ import { useAuth } from '../context/AuthContext';
 
 interface SidebarProps {
   collapsed: boolean;
+  compactNavigation: boolean;
   route: RouteKey;
   activeSubKey: string;
   onCollapse: () => void;
   onNavigate: (route: RouteKey, childKey?: string) => void;
 }
 
-export function Sidebar({ collapsed, route, activeSubKey, onCollapse, onNavigate }: SidebarProps) {
+export function Sidebar({ collapsed, compactNavigation, route, activeSubKey, onCollapse, onNavigate }: SidebarProps) {
   const { canAccessRoute, canAccessChild } = useAuth();
   const visibleMenuGroups = menuGroups
     .filter((group) => canAccessRoute(group.key))
@@ -31,7 +32,11 @@ export function Sidebar({ collapsed, route, activeSubKey, onCollapse, onNavigate
   };
 
   return (
-    <aside className={`sidebar-shell ${collapsed ? 'collapsed' : ''}`}>
+    <aside
+      id="primary-navigation"
+      className={`sidebar-shell ${collapsed ? 'collapsed' : ''} ${compactNavigation ? 'compact-navigation' : ''}`}
+      aria-hidden={compactNavigation && collapsed}
+    >
       <nav className="sidebar-nav" aria-label="主导航">
         <Menu
           mode="inline"

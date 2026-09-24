@@ -127,6 +127,8 @@ def report_status_from_postgres(report_id: str = "latest") -> dict[str, Any] | N
         "summary": content if isinstance(content, dict) else {},
         "metadata": metadata if isinstance(metadata, dict) else {},
         "status": data.get("status"),
+        "report_type": data.get("report_type"),
+        "title": data.get("title"),
         "source": "postgresql.report_runs",
     }
 
@@ -191,7 +193,9 @@ def report_summary_from_postgres() -> dict[str, Any] | None:
     today = 0
     pending = 0
     published = 0
+    approved = 0
     rejected = 0
+    archived = 0
     for item in items:
         generated = str(item.get("generated_at") or "")[:10]
         status = str(item.get("status") or "")
@@ -199,15 +203,22 @@ def report_summary_from_postgres() -> dict[str, Any] | None:
             today += 1
         if status in {"draft", "ready", "pending", "reviewing"}:
             pending += 1
-        if status in {"published", "approved"}:
+        if status == "approved":
+            approved += 1
+        if status == "published":
             published += 1
         if status == "rejected":
             rejected += 1
+        if status == "archived":
+            archived += 1
     return {
         "today_generated": today,
         "pending_review": pending,
         "published": published,
+        "approved": approved,
+        "pending_publish": approved,
         "rejected": rejected,
+        "archived": archived,
         "total": payload.get("total") or len(items),
         "source": payload.get("source"),
     }

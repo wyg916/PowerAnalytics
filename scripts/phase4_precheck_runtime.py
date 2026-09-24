@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_QUEUE = "phase4_health"
 DEFAULT_FORECAST_QUEUE = "forecast_final_rc"
-DEFAULT_KNOWLEDGE_QUEUES = "rag,embedding,report"
+DEFAULT_KNOWLEDGE_QUEUES = "rag,embedding,report,data_sync,report_daily,default"
 WORKER_ROLES = {"health", "forecast", "knowledge"}
 DOCKER_TIMEOUT_SECONDS = 20
 WORKER_START_TIMEOUT_SECONDS = 180

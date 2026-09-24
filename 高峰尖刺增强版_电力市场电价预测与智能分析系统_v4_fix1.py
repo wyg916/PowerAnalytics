@@ -54,8 +54,8 @@ from sklearn.preprocessing import StandardScaler
 # 路径配置
 # =========================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(PROJECT_ROOT, "output")
-RESULT_DIR = os.path.join(PROJECT_ROOT, "结果-3")
+DATA_DIR = os.environ.get("PIPELINE_DATA_DIR", "").strip() or os.path.join(PROJECT_ROOT, "output")
+RESULT_DIR = os.environ.get("PIPELINE_RESULT_DIR", "").strip() or os.path.join(PROJECT_ROOT, "结果-3")
 MASTER_FILE = os.path.join(DATA_DIR, "master_table.xlsx")
 FORECAST_LOAD_SELECTED_FILE = os.path.join(DATA_DIR, "forecast_load_selected.xlsx")
 
@@ -441,10 +441,18 @@ def add_safe_business_features(df: pd.DataFrame) -> pd.DataFrame:
     if "da_price_hist_hour_mean" in df.columns and "da_price_lag_1" in df.columns:
         df["hourly_pressure_proxy"] = df["da_price_lag_1"] - df["da_price_hist_hour_mean"]
 
-    # 误差记忆类特征：训练主表无外部误差记忆时使用安全零值占位，确保快速预测和训练 schema 一致。
+    # 误差记忆类特征：只沿时间轴继承最近一个已知历史值。训练主表完全没有
+    # 外部误差记忆时使用显式零基线；未来行不得因为 concat 产生 NaN 后再被
+    # 模型或调用方静默补值。
     for col in ["hour_bias_mean", "scenario_mae", "historical_under_predict_rate"]:
         if col not in df.columns:
             df[col] = 0.0
+            continue
+        numeric_values = pd.to_numeric(df[col], errors="coerce")
+        illegal_mask = df[col].notna() & numeric_values.isna()
+        if illegal_mask.any():
+            raise ValueError(f"ILLEGAL_ERROR_MEMORY: {col} 包含非数值误差记忆")
+        df[col] = numeric_values.ffill().fillna(0.0)
 
     return df
 
@@ -762,6 +770,8 @@ def generate_formal_forward_forecast(
             raise ValueError(f"NAN_FORBIDDEN: 未来特征包含空值，禁止默认填充：{null_features[:20]}")
         if not np.isfinite(feature_input.to_numpy(dtype=float)).all():
             raise ValueError("INF_FORBIDDEN: 未来特征包含 Inf 或 -Inf")
+        missing_features: List[str] = []
+        remaining_missing: List[str] = []
 
         future_X = pd.DataFrame([feature_input.to_numpy(dtype="float64")], columns=feature_cols, dtype="float64")
         base_pred = float(artifacts["final_base_model"].predict(future_X)[0])
