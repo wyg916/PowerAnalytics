@@ -47,9 +47,9 @@
 <a id="product-demo"></a>
 ## 项目介绍视频
 
-https://github.com/user-attachments/assets/8be56a88-9e4b-47b2-bf7b-d2eb6257425c
+[⬇️ 下载完整 2 分钟项目介绍视频（1080p MP4）](https://github.com/wyg916/PowerAnalytics/releases/download/v2.12.1-open-source.1/poweranalytics-project1-github-promo-zh-cn-1080p.mp4)
 
-> 2 分钟真实产品演示。使用 GitHub 原生视频附件播放器，点击播放、不自动下载；720p、30fps、H.264/AAC，含中文配音与黄色加粗字幕。
+> 2 分钟真实产品演示。为避免 GitHub README 视频附件在部分网络环境下因分段加载过慢而卡在首秒，改用 Release 完整文件下载；下载完成后可正常播放。1080p、30fps、H.264/AAC，含中文配音与黄色加粗字幕。
 
 画面来自本项目实际运行，覆盖看板、ChatBI、流式输出、长短期记忆、RAG Citation、数据与预测、策略、知识库、模型评测、任务及系统治理。演示采用历史回放数据，不表示实时电力市场在线预测，原始录屏母带不随仓库发布。完整演示路线、提问与通过标准见 [DEMO_GUIDE.md](docs/DEMO_GUIDE.md)，媒体来源、高清 Release 版本与校验信息见 [docs/media/README.md](docs/media/README.md)。
 
