@@ -47,9 +47,9 @@
 <a id="product-demo"></a>
 ## 项目介绍视频
 
-https://github.com/user-attachments/assets/8c7b994e-6a6a-4d38-a94c-04bd75eede25
+https://github.com/user-attachments/assets/2dfeec1b-db65-40dc-a7e9-315b5640751f
 
-> 2 分钟真实产品演示。使用 GitHub 原生视频附件播放器，可直接在页面中播放；为降低网络带宽要求，已优化为 480p、15fps、H.264/AAC，含中文配音与黄色加粗字幕。
+> 2 分钟真实产品演示。使用 GitHub 原生视频附件播放器，可直接在页面中播放；为降低网络带宽要求，已优化为 720p、15fps、H.264/AAC，含中文配音与黄色加粗字幕。
 
 画面来自本项目实际运行，覆盖看板、ChatBI、流式输出、长短期记忆、RAG Citation、数据与预测、策略、知识库、模型评测、任务及系统治理。演示采用历史回放数据，不表示实时电力市场在线预测，原始录屏母带不随仓库发布。完整演示路线、提问与通过标准见 [DEMO_GUIDE.md](docs/DEMO_GUIDE.md)，媒体来源、高清 Release 版本与校验信息见 [docs/media/README.md](docs/media/README.md)。
 
