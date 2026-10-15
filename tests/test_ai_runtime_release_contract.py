@@ -28,8 +28,10 @@ from backend.app.ai_assistant.llm_router import LLMRouteError, LLMRouter, provid
 from backend.app.ai_assistant.runtime_router import AssistantRoute, answer_strategy, route_assistant_request
 
 
-def identity(tenant: str = "tenant-a", user: str = "user-a", session: str = "sess-a") -> IdentityContext:
-    return IdentityContext(tenant, "workspace", user, ("analyst",), session_id=session)
+def identity(
+    tenant: str = "tenant-a", user: str = "user-a", session: str = "sess-a", workspace: str = "workspace"
+) -> IdentityContext:
+    return IdentityContext(tenant, workspace, user, ("analyst",), session_id=session)
 
 
 def _image(fmt: str) -> bytes:
@@ -105,11 +107,14 @@ def test_attachment_scope_prompt_injection_citation_and_formula_safety(monkeypat
     assert "[formula-text]" in context["untrusted_text"]
     assert "<untrusted_attachment" in context["untrusted_text"]
     with pytest.raises(AttachmentError) as cross_user:
-        attachments.get_attachment(identity(user="user-b"), record["attachment_id"])
+        attachments.get_attachment(identity(user="user-b"), record["attachment_id"], session_id="sess-a")
     assert cross_user.value.status_code == 404
     with pytest.raises(AttachmentError) as cross_tenant:
-        attachments.get_attachment(identity(tenant="tenant-b"), record["attachment_id"])
+        attachments.get_attachment(identity(tenant="tenant-b"), record["attachment_id"], session_id="sess-a")
     assert cross_tenant.value.status_code == 404
+    with pytest.raises(AttachmentError) as cross_workspace:
+        attachments.get_attachment(identity(workspace="workspace-b"), record["attachment_id"], session_id="sess-a")
+    assert cross_workspace.value.status_code == 404
     with pytest.raises(AttachmentError) as cross_session:
         attachments.get_attachment(owner, record["attachment_id"], session_id="sess-b")
     assert cross_session.value.code == "PERMISSION_DENIED"
@@ -130,15 +135,15 @@ def test_attachment_type_parse_failure_and_idempotent_delete(monkeypatch, tmp_pa
     assert failed_record["status"] == "failed"
     assert failed_record["chunks"] == [] and failed_record["properties"] == {}
     record = attachments.upload_attachment(identity(), session_id="sess-a", file_name="ok.txt", media_type="text/plain", content=b"ok")
-    assert attachments.delete_attachment(identity(), record["attachment_id"])["status"] == "deleted"
-    assert attachments.delete_attachment(identity(), record["attachment_id"])["status"] == "deleted"
-    deleted_meta = attachments.get_attachment(identity(), record["attachment_id"])
+    assert attachments.delete_attachment(identity(), record["attachment_id"], session_id="sess-a")["status"] == "deleted"
+    assert attachments.delete_attachment(identity(), record["attachment_id"], session_id="sess-a")["status"] == "deleted"
+    deleted_meta = attachments.get_attachment(identity(), record["attachment_id"], session_id="sess-a")
     assert deleted_meta["chunks"] == [] and deleted_meta["properties"] == {}
     with pytest.raises(AttachmentError) as deleted_reuse:
         attachments.attachment_context(identity(), [record["attachment_id"]], session_id="sess-a")
     assert deleted_reuse.value.code == "ATTACHMENT_NOT_AVAILABLE"
     with pytest.raises(AttachmentError) as traversal:
-        attachments.get_attachment(identity(), "../outside")
+        attachments.get_attachment(identity(), "../outside", session_id="sess-a")
     assert traversal.value.code == "ATTACHMENT_NOT_FOUND"
 
 
@@ -152,8 +157,8 @@ def test_attachment_cancel_and_ttl_cleanup_are_idempotent(monkeypatch, tmp_path)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["status"] = "parsing"
     attachments._write_json(meta_path, meta)
-    assert attachments.delete_attachment(owner, parsing["attachment_id"])["status"] == "cancelled"
-    assert attachments.delete_attachment(owner, parsing["attachment_id"])["status"] == "cancelled"
+    assert attachments.delete_attachment(owner, parsing["attachment_id"], session_id="sess-a")["status"] == "cancelled"
+    assert attachments.delete_attachment(owner, parsing["attachment_id"], session_id="sess-a")["status"] == "cancelled"
     assert not data_path.exists()
 
     expired = attachments.upload_attachment(
@@ -163,7 +168,7 @@ def test_attachment_cancel_and_ttl_cleanup_are_idempotent(monkeypatch, tmp_path)
     expired_meta = json.loads(expired_meta_path.read_text(encoding="utf-8"))
     expired_meta["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     attachments._write_json(expired_meta_path, expired_meta)
-    ttl_record = attachments.get_attachment(owner, expired["attachment_id"])
+    ttl_record = attachments.get_attachment(owner, expired["attachment_id"], session_id="sess-a")
     assert ttl_record["status"] == "deleted"
     assert ttl_record["error"]["code"] == "ATTACHMENT_EXPIRED"
     assert ttl_record["chunks"] == [] and ttl_record["properties"] == {}

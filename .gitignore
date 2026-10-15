@@ -15,6 +15,7 @@ docx_render_check_*/
 .codex_tmp/
 .codex_envs/
 backups/
+docs/codex/evidence/
 wheelhouse/
 browser_cache/
 .browser_cache/
@@ -59,6 +60,7 @@ frontend/.vite/
 /*-snapshot.md
 /*-console.txt
 /*-layout-check.json
+/备-AGENTS.md
 
 # Large local model/data artifacts
 *.zip
@@ -76,6 +78,7 @@ model_artifacts/*/*
 !model_artifacts/*/thresholds.json
 !model_artifacts/*/training_config.json
 /model_artifacts/model_day6b_*/
+/model_artifacts/model_run_*/
 *.db
 *.sqlite
 *.sqlite3

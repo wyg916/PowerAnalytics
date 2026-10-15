@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from ....core.config import PROJECT_ROOT
@@ -52,6 +52,7 @@ class ModelActionPayload(BaseModel):
     region: str = "浙江省"
     domain: str = "price"
     target_name: str = "da_price"
+    rolling_backtest: bool = False
 
 
 def _payload_dict(payload: BaseModel) -> dict:
@@ -310,9 +311,12 @@ def models_center_version_detail(
 @router.post("/api/models/center/training/start")
 def models_center_training_start(
     payload: ModelActionPayload,
-    user: Annotated[CurrentUser, Depends(require_permission("task:run"))],
+    user: Annotated[CurrentUser, Depends(require_permission("model:manage"))],
 ) -> dict:
-    result = start_model_training(user=user, payload=_payload_dict(payload))
+    try:
+        result = start_model_training(user=user, payload=_payload_dict(payload))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     write_audit_log(
         action="model.training.start",
         user=user,
@@ -326,7 +330,7 @@ def models_center_training_start(
 @router.post("/api/models/center/activate")
 def models_center_activate(
     payload: ModelActionPayload,
-    user: Annotated[CurrentUser, Depends(require_permission("task:run"))],
+    user: Annotated[CurrentUser, Depends(require_permission("model:manage"))],
 ) -> dict:
     result = activate_model_version(
         payload.version or "",
@@ -343,13 +347,15 @@ def models_center_activate(
         status="success" if result.get("success") else "failed",
         metadata=result,
     )
+    if not result.get("success"):
+        raise HTTPException(status_code=409, detail=result)
     return result
 
 
 @router.post("/api/models/center/rollback")
 def models_center_rollback(
     payload: ModelActionPayload,
-    user: Annotated[CurrentUser, Depends(require_permission("task:run"))],
+    user: Annotated[CurrentUser, Depends(require_permission("model:manage"))],
 ) -> dict:
     result = rollback_model_version(
         payload.version or "",
@@ -366,6 +372,8 @@ def models_center_rollback(
         status="success" if result.get("success") else "failed",
         metadata=result,
     )
+    if not result.get("success"):
+        raise HTTPException(status_code=409, detail=result)
     return result
 
 

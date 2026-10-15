@@ -14,7 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from automation_common import get_pipeline_paths, load_config  # noqa: E402
 
 
-APP_VERSION = "v2.11.2"
+def _load_app_version() -> str:
+    raw = (PROJECT_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    if not raw:
+        raise RuntimeError("VERSION 文件不能为空。")
+    return raw if raw.startswith("v") else f"v{raw}"
+
+
+APP_VERSION = _load_app_version()
 PLATFORM_NAME = "售电交易 AI 辅助决策平台"
 
 

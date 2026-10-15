@@ -204,6 +204,9 @@ export function SourceContextPanel({
       />
     );
   }
+  const batchStatus = meta.is_stale || ['historical', 'stale'].includes(String(meta.freshness_status || ''))
+    ? '需更新'
+    : '可使用';
   return (
     <section className="source-context-panel" aria-label="业务时间与版本">
       <div className="source-context-panel-head">
@@ -218,6 +221,7 @@ export function SourceContextPanel({
       <div className="source-context-panel-grid">
         <span><small>业务时间</small><b>{timeText(meta.updated_at || meta.generated_at)}</b></span>
         <span><small>更新时间</small><b>{timeText(lastRefreshedAt)}</b></span>
+        <span><small>批次状态</small><b>{batchStatus}</b></span>
       </div>
     </section>
   );

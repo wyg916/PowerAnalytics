@@ -9,6 +9,12 @@ import { LoginPage } from '../pages/LoginPage';
 import { getDefaultChildKey, normalizeRouteState, routeTitles } from './router';
 import type { PageProps, RouteKey, RouteState } from '../types/ui';
 
+const compactNavigationQuery = '(max-width: 900px)';
+
+function isCompactNavigationViewport() {
+  return window.matchMedia(compactNavigationQuery).matches;
+}
+
 const pages: Record<RouteKey, LazyExoticComponent<(props: PageProps) => JSX.Element>> = {
   dashboard: lazy(() => import('../pages/dashboard/DashboardPage').then((mod) => ({ default: mod.DashboardPage }))),
   data: lazy(() => import('../pages/data/DataCenterPage').then((mod) => ({ default: mod.DataCenterPage }))),
@@ -25,14 +31,36 @@ const pages: Record<RouteKey, LazyExoticComponent<(props: PageProps) => JSX.Elem
 export function App() {
   const { authRequired, loginRequested, loading: authLoading, isAuthenticated } = useAuth();
   const [routeState, setRouteState] = useState<RouteState>(() => normalizeRouteState(window.location.hash));
-  const [collapsed, setCollapsed] = useState(false);
+  const [compactNavigation, setCompactNavigation] = useState(isCompactNavigationViewport);
+  const [collapsed, setCollapsed] = useState(isCompactNavigationViewport);
 
   useEffect(() => {
-    const handleHashChange = () => setRouteState(normalizeRouteState(window.location.hash));
+    const media = window.matchMedia(compactNavigationQuery);
+    const handleHashChange = () => {
+      setRouteState(normalizeRouteState(window.location.hash));
+      if (media.matches) setCollapsed(true);
+    };
+    const handleViewportChange = (event: MediaQueryListEvent) => {
+      setCompactNavigation(event.matches);
+      setCollapsed(event.matches);
+    };
     window.addEventListener('hashchange', handleHashChange);
+    media.addEventListener('change', handleViewportChange);
     if (!window.location.hash) window.location.hash = `/dashboard/${getDefaultChildKey('dashboard')}`;
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      media.removeEventListener('change', handleViewportChange);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!compactNavigation || collapsed) return undefined;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCollapsed(true);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [collapsed, compactNavigation]);
 
   const title = useMemo(() => routeTitles[routeState.route], [routeState.route]);
   const ActivePage = pages[routeState.route];
@@ -50,6 +78,7 @@ export function App() {
     const nextState = { route: nextRoute, childKey };
     window.location.hash = `/${nextRoute}/${childKey}`;
     setRouteState(nextState);
+    if (compactNavigation) setCollapsed(true);
   }
 
   return (
@@ -57,6 +86,7 @@ export function App() {
       route={routeState.route}
       activeSubKey={routeState.childKey}
       collapsed={collapsed}
+      compactNavigation={compactNavigation}
       onCollapse={() => setCollapsed((value) => !value)}
       onNavigate={handleNavigate}
     >

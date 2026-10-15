@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any, Iterator
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
@@ -60,6 +63,14 @@ from backend.app.ai_assistant.runtime_router import (
 
 router = APIRouter()
 
+MAX_EXPORT_MESSAGES = 500
+MAX_EXPORT_CHARS = 500_000
+
+
+class PDFExportUnavailableError(RuntimeError):
+    pass
+
+
 def _identity(user: CurrentUser, session_id: str = "", run_id: str = "latest") -> IdentityContext:
     return IdentityContext.from_user(user, session_id=session_id, run_id=run_id)
 
@@ -96,12 +107,22 @@ def _chunk_text(text: str, chunk_size: int = 36) -> Iterator[str]:
 
 
 def _format_messages_for_export(messages: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+    if not isinstance(messages, list):
+        raise ValueError("messages 必须是数组。")
+    if len(messages) > MAX_EXPORT_MESSAGES:
+        raise ValueError(f"单次最多导出 {MAX_EXPORT_MESSAGES} 条消息。")
     rows: list[tuple[str, str, str]] = []
+    total_chars = 0
     for item in messages:
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            continue
         role = "用户" if item.get("role") == "user" else "AI 助手"
-        created_at = str(item.get("created_at") or item.get("createdAt") or "")
+        created_at = str(mask_secret_fields(str(item.get("created_at") or item.get("createdAt") or "")))[:80]
         content = str(mask_secret_fields(str(item.get("content") or ""))).strip()
         if content:
+            total_chars += len(content)
+            if total_chars > MAX_EXPORT_CHARS:
+                raise ValueError(f"单次导出正文最多 {MAX_EXPORT_CHARS} 个字符。")
             rows.append((role, created_at, content))
     return rows
 
@@ -125,6 +146,132 @@ def _build_conversation_docx(payload: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+
+
+def _build_conversation_pdf(payload: dict[str, Any]) -> bytes:
+    import fitz
+
+    rows = _format_messages_for_export(payload.get("messages") or [])
+    font_candidates = [
+        os.environ.get("AI_PDF_FONT_FILE", ""),
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    ]
+    font_file = next((str(Path(item)) for item in font_candidates if item and Path(item).is_file()), "")
+    if not font_file:
+        raise PDFExportUnavailableError("未找到可嵌入的中文 PDF 字体。")
+    document = fitz.open()
+    page_width, page_height = fitz.paper_size("a4")
+    margin_x, top_margin, bottom_margin = 48.0, 48.0, 46.0
+    content_width = page_width - (2 * margin_x)
+    font_name = "assistantcjk"
+    font = fitz.Font(fontfile=font_file)
+    page: fitz.Page | None = None
+    cursor_y = top_margin
+
+    def new_page(*, continued: bool = False) -> None:
+        nonlocal page, cursor_y
+        page = document.new_page(width=page_width, height=page_height)
+        page.insert_font(fontname=font_name, fontfile=font_file)
+        cursor_y = top_margin
+        if continued:
+            page.insert_text(
+                (margin_x, cursor_y), "AI 助手会话导出（续）",
+                fontname=font_name, fontsize=10.5, color=(0.32, 0.38, 0.46),
+            )
+            cursor_y += 24
+
+    def ensure_space(height: float) -> None:
+        if page is None or cursor_y + height > page_height - bottom_margin:
+            new_page(continued=page is not None)
+
+    def wrap_line(value: str, font_size: float, width: float) -> list[str]:
+        if not value:
+            return [""]
+        lines: list[str] = []
+        current = ""
+        for character in value.expandtabs(4):
+            candidate = current + character
+            if current and font.text_length(candidate, fontsize=font_size) > width:
+                lines.append(current.rstrip())
+                current = character.lstrip() if character.isspace() else character
+            else:
+                current = candidate
+        lines.append(current.rstrip())
+        return lines
+
+    def write_text(value: str, *, font_size: float = 10.5, line_height: float = 16.0,
+                   color: tuple[float, float, float] = (0.12, 0.15, 0.2),
+                   indent: float = 0.0) -> None:
+        nonlocal cursor_y
+        paragraphs = value.splitlines() or [value]
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            lines = wrap_line(paragraph, font_size, content_width - indent) or [""]
+            for line in lines:
+                ensure_space(line_height)
+                assert page is not None
+                if line:
+                    page.insert_text(
+                        (margin_x + indent, cursor_y), line,
+                        fontname=font_name, fontsize=font_size, color=color,
+                    )
+                cursor_y += line_height
+            if paragraph_index < len(paragraphs) - 1:
+                cursor_y += 3
+
+    new_page()
+    assert page is not None
+    page.insert_text(
+        (margin_x, cursor_y), "AI 助手会话导出",
+        fontname=font_name, fontsize=19, color=(0.07, 0.22, 0.43),
+    )
+    cursor_y += 32
+    session_id = str(mask_secret_fields(str(payload.get("session_id") or "local_session")))[:160]
+    exported_at = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+    write_text(f"会话 ID：{session_id}", font_size=9.5, line_height=14, color=(0.34, 0.39, 0.46))
+    write_text(f"导出时间：{exported_at}", font_size=9.5, line_height=14, color=(0.34, 0.39, 0.46))
+    write_text(
+        "说明：本文件由后端导出接口生成，内容来自当前会话消息，不包含隐藏调试 Trace。",
+        font_size=9.5, line_height=14, color=(0.34, 0.39, 0.46),
+    )
+    cursor_y += 12
+    page.draw_line((margin_x, cursor_y), (page_width - margin_x, cursor_y), color=(0.8, 0.84, 0.89), width=0.8)
+    cursor_y += 22
+
+    if not rows:
+        write_text("当前会话没有可导出的消息。", color=(0.38, 0.42, 0.48))
+    for role, created_at, content in rows:
+        ensure_space(42)
+        assert page is not None
+        heading = f"{role}{f' · {created_at}' if created_at else ''}"
+        page.insert_text(
+            (margin_x, cursor_y), heading,
+            fontname=font_name, fontsize=11.5,
+            color=(0.1, 0.36, 0.62) if role == "用户" else (0.12, 0.48, 0.37),
+        )
+        cursor_y += 20
+        write_text(content, indent=8)
+        cursor_y += 12
+
+    for page_number, export_page in enumerate(document, start=1):
+        footer = f"第 {page_number} / {document.page_count} 页"
+        footer_width = font.text_length(footer, fontsize=8.5)
+        export_page.insert_text(
+            ((page_width - footer_width) / 2, page_height - 22), footer,
+            fontname=font_name, fontsize=8.5, color=(0.45, 0.49, 0.55),
+        )
+    document.set_metadata({
+        "title": "AI 助手会话导出",
+        "author": "智能运营分析平台",
+        "subject": "当前会话消息导出",
+    })
+    try:
+        document.subset_fonts(fallback=True)
+        return document.tobytes(garbage=4, deflate=True)
+    finally:
+        document.close()
 
 
 def _enterprise_runtime(user: CurrentUser) -> dict[str, Any]:
@@ -372,7 +519,7 @@ def _answer_chat_from_payload(
         if not attachments["images"]:
             raise HTTPException(status_code=422, detail={"code": "VISION_ATTACHMENT_REQUIRED"})
         return _vision_answer(payload, route, alias, attachments)
-    if route == AssistantRoute.CHATBI and payload.mode == "chatbi":
+    if route == AssistantRoute.CHATBI:
         session_id = payload.session_id or f"sess_{uuid.uuid4().hex}"
         identity = IdentityContext.from_user(
             user, session_id=session_id, run_id=f"run_chatbi_{uuid.uuid4().hex}", agent_id="chatbi"
@@ -387,21 +534,35 @@ def _answer_chat_from_payload(
             )
         except ChatBIServiceError as exc:
             raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
-        narrative = result.get("narrative") or {}
-        answer = str(narrative.get("summary") or narrative.get("conclusion") or result.get("state") or "")
-        return _finalize_contract(payload, route, alias, attachments, {
+        answer = str(result.get("answer") or "").strip()
+        if not answer or answer.casefold() in {
+            "success", "empty", "insufficient_data", "clarification_required", "unavailable",
+        }:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "CHATBI_ANSWER_CONTRACT_INVALID",
+                    "message": "ChatBI 未生成可展示的最终回答。",
+                },
+            )
+        response_payload = {
             **result,
             "session_id": session_id,
             "trace_id": f"trace_{uuid.uuid4().hex}",
             "answer": answer,
-            "citations": [],
+            "citations": list((result.get("narrative") or {}).get("citations") or []),
             "grounding_status": "grounded" if result.get("result_dataset") else "unavailable",
             "route": {
                 "selected_provider": (result.get("planner") or {}).get("provider"),
                 "selected_model": (result.get("planner") or {}).get("model"),
                 "fallback_used": bool((result.get("planner") or {}).get("fallback")),
             },
-        })
+        }
+        if result.get("state") == "unavailable":
+            response_payload["unavailable_reason"] = str(
+                (result.get("error") or {}).get("code") or "chatbi_unavailable"
+            )
+        return _finalize_contract(payload, route, alias, attachments, response_payload)
     runtime = _assistant_runtime(route, user, payload.knowledge_scope)
     try:
         response = _answer_contract(answer_chat(
@@ -608,11 +769,11 @@ async def ai_upload_attachment(
 def ai_get_attachment(
     attachment_id: str,
     user: Annotated[CurrentUser, Depends(require_permission("assistant:use"))],
-    session_id: str | None = None,
+    session_id: str,
 ) -> dict:
     try:
         return {key: value for key, value in get_attachment(
-            _identity(user, session_id or ""), attachment_id, session_id=session_id
+            _identity(user, session_id), attachment_id, session_id=session_id
         ).items() if key in {
             "attachment_id", "session_id", "file_name", "media_type", "size_bytes", "sha256",
             "status", "parser", "created_at", "expires_at", "error", "prompt_injection_detected",
@@ -627,9 +788,10 @@ def ai_delete_attachment(
     attachment_id: str,
     request: Request,
     user: Annotated[CurrentUser, Depends(require_permission("assistant:use"))],
+    session_id: str,
 ) -> dict:
     try:
-        record = delete_attachment(_identity(user), attachment_id)
+        record = delete_attachment(_identity(user, session_id), attachment_id, session_id=session_id)
         write_audit_log(
             action="ai.attachment.delete",
             user=user,
@@ -649,7 +811,7 @@ def ai_delete_attachment(
             status="denied" if exc.code == "PERMISSION_DENIED" else "failed",
             request_id=request.headers.get("X-Request-ID", ""),
             ip_address=request.client.host if request.client else "",
-            metadata={"error_code": exc.code},
+            metadata={"session_id": session_id, "error_code": exc.code},
         )
         _raise_attachment_http(exc)
         raise AssertionError("unreachable")
@@ -662,16 +824,22 @@ def ai_export_conversation(
     format: str = "docx",
 ) -> Response:
     normalized_format = format.lower().strip()
-    if normalized_format == "pdf":
-        raise HTTPException(status_code=501, detail="PDF 导出引擎尚未部署，请先使用 Word 导出。")
-    if normalized_format != "docx":
+    if normalized_format not in {"docx", "pdf"}:
         raise HTTPException(status_code=400, detail="仅支持 docx 或 pdf 导出格式。")
-
-    content = _build_conversation_docx(payload)
-    filename = f"assistant_conversation_{int(time.time())}.docx"
+    try:
+        content = _build_conversation_pdf(payload) if normalized_format == "pdf" else _build_conversation_docx(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PDFExportUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="PDF 导出运行时不可用。") from exc
+    filename = f"assistant_conversation_{int(time.time())}.{normalized_format}"
+    media_type = (
+        "application/pdf" if normalized_format == "pdf"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
     return Response(
         content,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

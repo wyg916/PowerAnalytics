@@ -10,11 +10,17 @@ from backend.app.data_access import jsonable
 from backend.app.observability import log_suppressed_exception
 from backend.app.repositories.task_repository import append_task_log, find_active_idempotent_task, save_task_record, task_runtime_summary
 from backend.app.services.task_runtime import idempotency_key_for, normalize_task_kind, queue_for_kind, task_policy
+from backend.app.services.forecast_transaction_service import generate_run_id
 from backend.app.task_manager import task_manager
 from backend.app.workers.task_commands import command_for_kind
 
 
-SPECIALIZED_TASK_KINDS = {"knowledge_import", "embedding_refresh", "report_generate"}
+SPECIALIZED_TASK_KINDS = {
+    "knowledge_import",
+    "embedding_refresh",
+    "report_generate",
+    "health_check",
+}
 BUSINESS_TASK_KINDS = {"price_predict", "data_sync", "report_daily"}
 PYTHON_TASK_KINDS = SPECIALIZED_TASK_KINDS | BUSINESS_TASK_KINDS
 
@@ -78,16 +84,16 @@ def enqueue_task(kind: str, payload: dict[str, Any] | None = None) -> dict[str, 
         return _enqueue_specialized_task(kind, payload, mode=mode)
     queue_name = queue_for_kind(kind)
     is_queue_available = mode != "local_thread" and celery_queue_available(queue_name)
-    if mode == "celery" and not is_queue_available:
+    if mode in {"auto", "celery"} and not is_queue_available:
         raise RuntimeError(
-            f"TASK_EXECUTION_MODE=celery requires an active consumer for queue '{queue_name}'."
+            f"TASK_EXECUTION_MODE={mode} requires an active consumer for queue '{queue_name}'."
         )
-    if mode == "local_thread" or (mode == "auto" and not is_queue_available):
+    if mode == "local_thread":
         return task_manager.start(kind)
 
     from backend.app.workers.tasks import run_command_task, sync_core_data_task
 
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = generate_run_id()
     task_id = "task_" + uuid.uuid4().hex[:12]
     policy = task_policy(kind)
     dedupe_window = int(payload.get("dedupe_window_seconds") or policy.dedupe_window_seconds)
@@ -119,30 +125,38 @@ def enqueue_task(kind: str, payload: dict[str, Any] | None = None) -> dict[str, 
         "error_message": "",
         "execution_mode": "celery",
     }
-    save_task_record(record, status="pending", log_text="task accepted")
+    if not save_task_record(record, status="pending", log_text="task accepted"):
+        raise RuntimeError("PostgreSQL task state persistence is unavailable; task was not submitted.")
     append_task_log(task_id, level="info", step="prepare", message="task accepted", status="pending", run_id=run_id, task_name=kind, task_kind=kind, metadata={"queue_name": queue_name})
-    if kind == "sync_core_data":
-        async_result = sync_core_data_task.apply_async(args=(task_id, run_id), queue=queue_name)
-    else:
-        async_result = run_command_task.apply_async(args=(kind, task_id, run_id), queue=queue_name)
+    try:
+        if kind == "sync_core_data":
+            async_result = sync_core_data_task.apply_async(args=(task_id, run_id), queue=queue_name)
+        else:
+            async_result = run_command_task.apply_async(args=(kind, task_id, run_id), queue=queue_name)
+    except Exception as exc:
+        _mark_dispatch_failed(record, exc)
+        raise RuntimeError(f"Failed to submit task to active queue '{queue_name}'.") from exc
     record["celery_task_id"] = async_result.id
     record["execution_backend"] = "celery"
     record["execution_mode"] = "celery"
-    save_task_record(record, status="pending", log_text="task submitted to celery")
-    append_task_log(task_id, level="info", step="prepare", message="task submitted to celery", status="pending", run_id=run_id, task_name=kind, task_kind=kind, metadata={"celery_task_id": async_result.id, "queue_name": queue_name})
+    record["status"] = "queued"
+    record["message"] = "task submitted to celery"
+    if not save_task_record(record, status="queued", log_text="task submitted to celery"):
+        raise RuntimeError(f"Task was submitted to queue '{queue_name}' but its Celery identity could not be persisted.")
+    append_task_log(task_id, level="info", step="prepare", message="task submitted to celery", status="queued", run_id=run_id, task_name=kind, task_kind=kind, metadata={"celery_task_id": async_result.id, "queue_name": queue_name})
     return jsonable(record)
 
 
 def _enqueue_specialized_task(kind: str, payload: dict[str, Any], *, mode: str) -> dict[str, Any]:
     kind = normalize_task_kind(kind)
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = generate_run_id()
     task_id = "task_" + uuid.uuid4().hex[:12]
     policy = task_policy(kind)
     queue_name = queue_for_kind(kind)
     is_queue_available = mode != "local_thread" and celery_queue_available(queue_name)
-    if mode == "celery" and not is_queue_available:
+    if mode in {"auto", "celery"} and not is_queue_available:
         raise RuntimeError(
-            f"TASK_EXECUTION_MODE=celery requires an active consumer for queue '{queue_name}'."
+            f"TASK_EXECUTION_MODE={mode} requires an active consumer for queue '{queue_name}'."
         )
     dedupe_window = int(payload.get("dedupe_window_seconds") or policy.dedupe_window_seconds)
     idempotency_key, payload_hash = idempotency_key_for(kind, payload)
@@ -181,30 +195,15 @@ def _enqueue_specialized_task(kind: str, payload: dict[str, Any], *, mode: str) 
         "queue_name": queue_name,
         "metadata": metadata,
     }
-    if mode == "auto" and not is_queue_available and kind in BUSINESS_TASK_KINDS:
-        record["execution_mode"] = "db_pending"
-        save_task_record(record, status="pending", log_text="Celery/Redis unavailable; task kept in PostgreSQL pending queue")
-        append_task_log(
-            task_id,
-            level="warning",
-            step="prepare",
-            message="Celery/Redis unavailable; task kept in PostgreSQL pending queue",
-            status="pending",
-            run_id=run_id,
-            task_name=kind,
-            task_kind=kind,
-            metadata={"queue_name": queue_name},
-        )
-        record["execution_backend"] = "db_pending"
-        record["dispatch_fallback_reason"] = "Celery/Redis unavailable"
-        return jsonable(record)
     execution_mode = "celery" if mode == "celery" or (mode == "auto" and is_queue_available) else "local_thread"
     record["execution_mode"] = execution_mode
-    save_task_record(record, status="pending", log_text=f"task queued via {execution_mode}")
+    if not save_task_record(record, status="pending", log_text=f"task queued via {execution_mode}"):
+        raise RuntimeError("PostgreSQL task state persistence is unavailable; task was not submitted.")
     append_task_log(task_id, level="info", step="prepare", message=f"task queued via {execution_mode}", status="pending", run_id=run_id, task_name=kind, task_kind=kind, metadata={"queue_name": queue_name})
     if execution_mode == "celery":
         from backend.app.workers.tasks import (
             embedding_refresh_task,
+            health_check_task,
             knowledge_import_task,
             report_generate_task,
             run_data_sync_task,
@@ -216,20 +215,29 @@ def _enqueue_specialized_task(kind: str, payload: dict[str, Any], *, mode: str) 
             "knowledge_import": knowledge_import_task,
             "embedding_refresh": embedding_refresh_task,
             "report_generate": report_generate_task,
+            "health_check": health_check_task,
             "price_predict": run_price_predict_task,
             "data_sync": run_data_sync_task,
             "report_daily": run_report_daily_task,
         }
-        async_result = task_map[kind].apply_async(args=(task_id, run_id, payload), queue=queue_name)
+        try:
+            async_result = task_map[kind].apply_async(args=(task_id, run_id, payload), queue=queue_name)
+        except Exception as exc:
+            _mark_dispatch_failed(record, exc)
+            raise RuntimeError(f"Failed to submit task to active queue '{queue_name}'.") from exc
         record["celery_task_id"] = async_result.id
         record["execution_backend"] = "celery"
         record["execution_mode"] = "celery"
-        save_task_record(record, status="pending", log_text="task submitted to celery")
-        append_task_log(task_id, level="info", step="prepare", message="task submitted to celery", status="pending", run_id=run_id, task_name=kind, task_kind=kind, metadata={"celery_task_id": async_result.id, "queue_name": queue_name})
+        record["status"] = "queued"
+        record["message"] = "task submitted to celery"
+        if not save_task_record(record, status="queued", log_text="task submitted to celery"):
+            raise RuntimeError(f"Task was submitted to queue '{queue_name}' but its Celery identity could not be persisted.")
+        append_task_log(task_id, level="info", step="prepare", message="task submitted to celery", status="queued", run_id=run_id, task_name=kind, task_kind=kind, metadata={"celery_task_id": async_result.id, "queue_name": queue_name})
         return jsonable(record)
 
     from backend.app.workers.tasks import (
         embedding_refresh_task,
+        health_check_task,
         knowledge_import_task,
         report_generate_task,
         run_data_sync_task,
@@ -241,17 +249,54 @@ def _enqueue_specialized_task(kind: str, payload: dict[str, Any], *, mode: str) 
         "knowledge_import": knowledge_import_task,
         "embedding_refresh": embedding_refresh_task,
         "report_generate": report_generate_task,
+        "health_check": health_check_task,
         "price_predict": run_price_predict_task,
         "data_sync": run_data_sync_task,
         "report_daily": run_report_daily_task,
     }
     thread = threading.Thread(target=task_map[kind], args=(task_id, run_id, payload), daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        _mark_dispatch_failed(record, exc)
+        raise RuntimeError("Failed to start the explicitly configured local task thread.") from exc
     record["execution_backend"] = "local_thread"
     record["execution_mode"] = "local_thread"
-    save_task_record(record, status="pending", log_text="task submitted to local_thread")
+    if not save_task_record(record, status="pending", log_text="task submitted to local_thread"):
+        raise RuntimeError("Local task thread started but its runtime identity could not be persisted.")
     append_task_log(task_id, level="info", step="prepare", message="task submitted to local_thread", status="pending", run_id=run_id, task_name=kind, task_kind=kind, metadata={"queue_name": queue_name})
     return jsonable(record)
+
+
+def _mark_dispatch_failed(record: dict[str, Any], exc: Exception) -> None:
+    finished_at = datetime.now().isoformat(sep=" ", timespec="seconds")
+    record.update({
+        "status": "failed",
+        "message": "task dispatch failed",
+        "error_code": "TASK_DISPATCH_FAILED",
+        "error_message": "task dispatch failed before worker execution",
+        "error_detail": str(exc)[:300],
+        "finished_at": finished_at,
+        "ended_at": finished_at,
+    })
+    save_task_record(record, status="failed", log_text="task dispatch failed before worker execution")
+    append_task_log(
+        str(record.get("task_id") or ""),
+        level="error",
+        step="prepare",
+        message="task dispatch failed before worker execution",
+        status="failed",
+        run_id=str(record.get("run_id") or ""),
+        task_name=str(record.get("kind") or ""),
+        task_kind=str(record.get("kind") or ""),
+        metadata={"queue_name": record.get("queue_name"), "error_code": "TASK_DISPATCH_FAILED"},
+    )
+    log_suppressed_exception(
+        "worker.task_dispatch_failed",
+        exc,
+        task_id=record.get("task_id"),
+        queue_name=record.get("queue_name"),
+    )
 
 
 def task_runtime_health() -> dict[str, Any]:
@@ -262,10 +307,26 @@ def task_runtime_health() -> dict[str, Any]:
     celery_runtime = _celery_runtime_snapshot() if broker_ok else {"available": False, "source": "runtime_check_failed"}
     celery_ok = bool(celery_runtime.get("available"))
     runtime_workers = celery_runtime.get("active_workers") or []
+    active_queues = celery_runtime.get("active_queues") or []
     db_workers = summary.get("active_workers") or []
-    worker_names = runtime_workers if celery_ok else db_workers
+    required_kinds = {
+        "knowledge_import",
+        "embedding_refresh",
+        "report_generate",
+        "sync_core_data",
+        "price_predict",
+        "report_daily",
+        "health_check",
+    }
+    required_queues = sorted({queue_for_kind(kind) for kind in required_kinds})
+    missing_queues = sorted(set(required_queues) - set(active_queues))
+    dispatch_ready = bool(
+        mode == "local_thread" or (celery_ok and not missing_queues)
+    )
     return {
-        "ok": bool(mode != "celery" or celery_ok),
+        "ok": dispatch_ready,
+        "dispatch_ready": dispatch_ready,
+        "worker_required": mode in {"auto", "celery"},
         "execution_mode": mode,
         "redis": {"ok": redis_ok, "status": "connected" if redis_ok else "unavailable"},
         "celery": {
@@ -277,18 +338,29 @@ def task_runtime_health() -> dict[str, Any]:
             "active_count": celery_runtime.get("active_count", 0),
             "reserved_count": celery_runtime.get("reserved_count", 0),
             "scheduled_count": celery_runtime.get("scheduled_count", 0),
-            "active_queues": celery_runtime.get("active_queues") or [],
+            "active_queues": active_queues,
+            "required_queues": required_queues,
+            "missing_queues": missing_queues,
             "db_snapshot_workers": db_workers,
         },
         "celery_available": celery_ok,
-        "active_workers": worker_names,
+        "active_workers": runtime_workers,
         "queue_summary": summary.get("queue_summary") or [],
         "status_counts": summary.get("status_counts") or {},
         "running_task_count": int(summary.get("running_task_count") or 0),
         "pending_task_count": int(summary.get("pending_task_count") or 0),
         "failed_task_count": int(summary.get("failed_task_count") or 0),
         "timeout_task_count": int(summary.get("timeout_task_count") or 0),
-        "message": "ok" if mode != "celery" or celery_ok else "TASK_EXECUTION_MODE=celery but Celery/Redis is unavailable",
+        "message": (
+            "ok"
+            if dispatch_ready
+            else (
+                f"TASK_EXECUTION_MODE={mode} but required Celery queues are unavailable: "
+                + ", ".join(missing_queues)
+                if celery_ok and missing_queues
+                else f"TASK_EXECUTION_MODE={mode} but no active Celery worker is available"
+            )
+        ),
     }
 
 

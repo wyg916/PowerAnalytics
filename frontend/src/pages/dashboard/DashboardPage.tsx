@@ -1,5 +1,5 @@
 import { FileTextOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
-import { App } from 'antd';
+import { Alert, App } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
 import { TaskLogViewer } from '../../components/actions/TaskLogViewer';
@@ -149,6 +149,16 @@ export function DashboardPage(_: PageProps) {
       />
 
       {!showContent ? <PageDataState meta={viewMeta} onRetry={loadData} /> : null}
+
+      {viewMeta.state === 'stale' ? (
+        <Alert
+          className="home-dashboard-stale"
+          type="warning"
+          showIcon
+          message="当前业务批次需要更新"
+          description="页面保留已有业务记录供核对，不作为最新批次结论；请刷新后再作决策。"
+        />
+      ) : null}
 
       {showContent ? <section className="home-dashboard-content">
         <HomeKpiStrip items={kpiItems} />

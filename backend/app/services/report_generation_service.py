@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -62,8 +63,14 @@ def _safe_report_type(value: str) -> str:
 
 
 def _safe_report_id(run_id: str, report_type: str) -> str:
-    safe_run = re.sub(r"[^A-Za-z0-9_-]", "_", run_id)[:80]
-    return f"p5c_{report_type}_{safe_run}"
+    prefix = f"p5c_{report_type}_"
+    safe_run = re.sub(r"[^A-Za-z0-9_-]", "_", run_id)
+    return prefix + safe_run[: 64 - len(prefix)]
+
+
+def _versioned_report_id(root_report_id: str, version: int) -> str:
+    suffix = f"_v{int(version)}"
+    return f"{root_report_id[: 64 - len(suffix)]}{suffix}"
 
 
 def _public_hour(row: dict[str, Any]) -> dict[str, Any]:
@@ -260,6 +267,26 @@ def _existing_report(engine: Engine, report_id: str) -> dict[str, Any] | None:
     return mapping_dict(row) if row else None
 
 
+@contextmanager
+def _report_generation_lock(engine: Engine, lock_key: str):
+    connection = engine.connect()
+    try:
+        connection.execute(
+            text("SELECT pg_advisory_lock(hashtext(:lock_key))"),
+            {"lock_key": f"report-generation:{lock_key}"},
+        )
+        yield
+    finally:
+        try:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(hashtext(:lock_key))"),
+                {"lock_key": f"report-generation:{lock_key}"},
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+
 def generate_operational_report(
     engine: Engine,
     *,
@@ -269,13 +296,68 @@ def generate_operational_report(
     report_date: str | None = None,
     output_root: Path | None = None,
     failure_inject: str | None = None,
+    source_report_id: str | None = None,
+    requested_by: str = "",
 ) -> dict[str, Any]:
     safe_type = _safe_report_type(report_type)
     run, rows, source_meta = resolve_forecast_source(run_id, engine=engine)
     if not rows:
         raise ReportGenerationError(str(source_meta.get("unavailable_reason") or "没有可用于报告的完整预测批次"))
     resolved_run_id = str(run.get("run_id") or "")
-    report_id = _safe_report_id(resolved_run_id, safe_type)
+    base_report_id = _safe_report_id(resolved_run_id, safe_type)
+    lock_key = str(source_report_id or base_report_id)
+    with _report_generation_lock(engine, lock_key):
+        return _generate_operational_report_locked(
+            engine,
+            run=run,
+            rows=rows,
+            source_meta=source_meta,
+            resolved_run_id=resolved_run_id,
+            safe_type=safe_type,
+            region=region,
+            report_date=report_date,
+            output_root=output_root,
+            failure_inject=failure_inject,
+            source_report_id=str(source_report_id or "").strip(),
+            requested_by=requested_by,
+        )
+
+
+def _generate_operational_report_locked(
+    engine: Engine,
+    *,
+    run: dict[str, Any],
+    rows: list[dict[str, Any]],
+    source_meta: dict[str, Any],
+    resolved_run_id: str,
+    safe_type: str,
+    region: str,
+    report_date: str | None,
+    output_root: Path | None,
+    failure_inject: str | None,
+    source_report_id: str,
+    requested_by: str,
+) -> dict[str, Any]:
+    root_report_id = _safe_report_id(resolved_run_id, safe_type)
+    report_version = 1
+    report_id = root_report_id
+    if source_report_id:
+        source = _existing_report(engine, source_report_id)
+        if source is None:
+            raise ReportGenerationError("重新生成的来源报告不存在")
+        source_metadata = loads_json(source.get("metadata_json"), default={})
+        source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+        if str(source.get("status") or "").lower() != "rejected":
+            raise ReportGenerationError("只有已驳回报告可以重新生成新版本")
+        if str(source.get("run_id") or "") != resolved_run_id:
+            raise ReportGenerationError("来源报告与预测 run_id 不一致")
+        if str(source.get("report_type") or "") != safe_type:
+            raise ReportGenerationError("来源报告类型与重新生成请求不一致")
+        root_report_id = str(
+            source_metadata.get("root_report_id") or source_report_id
+        )
+        report_version = int(source_metadata.get("report_version") or 1) + 1
+        report_id = _versioned_report_id(root_report_id, report_version)
     existing = _existing_report(engine, report_id)
     if existing:
         metadata = loads_json(existing.get("metadata_json"), default={})
@@ -296,6 +378,9 @@ def generate_operational_report(
             "source_type": metadata.get("source_type") or source_meta.get("source_type"),
             "is_stale": bool(metadata.get("is_stale", source_meta.get("is_stale"))),
             "stale_reason": metadata.get("stale_reason") or source_meta.get("stale_reason"),
+            "report_version": int(metadata.get("report_version") or report_version),
+            "root_report_id": metadata.get("root_report_id") or root_report_id,
+            "source_report_id": metadata.get("source_report_id"),
         }
 
     report = build_operational_report(
@@ -324,6 +409,11 @@ def generate_operational_report(
             raise ReportGenerationError("INJECTED_BEFORE_PERSIST")
         metadata = {
             "report_schema_version": REPORT_SCHEMA_VERSION,
+            "report_type": safe_type,
+            "report_version": report_version,
+            "root_report_id": root_report_id,
+            "source_report_id": source_report_id or None,
+            "created_by": str(requested_by or "").strip() or None,
             "region": report["region"],
             "source_type": source_meta.get("source_type"),
             "is_stale": bool(source_meta.get("is_stale")),
@@ -382,4 +472,7 @@ def generate_operational_report(
         "source_type": source_meta.get("source_type"),
         "is_stale": bool(source_meta.get("is_stale")),
         "stale_reason": source_meta.get("stale_reason"),
+        "report_version": report_version,
+        "root_report_id": root_report_id,
+        "source_report_id": source_report_id or None,
     }

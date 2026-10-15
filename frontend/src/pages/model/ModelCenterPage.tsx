@@ -249,19 +249,23 @@ export function ModelCenterPage(_props: PageProps) {
   }), [data.error_trend]);
 
   async function handleTraining() {
+    if (!canRunTraining) {
+      message.error('缺少模型治理权限，无法启动训练。');
+      return;
+    }
     Modal.confirm({
       title: '确认启动模型训练',
       content: '系统将创建新的模型训练任务，并写入任务记录和模型治理审计记录。',
       onOk: async () => {
-        await startModelTraining({ model_type: filters.model_type, region: filters.region, reason: '模型中心手动启动训练' });
-        message.success('训练任务已创建');
+        const result = await startModelTraining({ model_type: filters.model_type, region: filters.region, reason: '模型中心手动启动训练' });
+        message.success(`训练任务已进入 Worker 队列：${result.task_id || '--'}`);
         await loadData();
       }
     });
   }
 
   async function handleActivate(version?: string) {
-    if (!version) return;
+    if (!version || !canRunTraining) return;
     Modal.confirm({
       title: '确认设为 Active 模型',
       content: `目标版本：${version}。该操作会替换当前 Active 模型，并写入治理记录。`,
@@ -275,7 +279,7 @@ export function ModelCenterPage(_props: PageProps) {
   }
 
   async function handleRollback(targetVersion = rollbackVersion) {
-    if (!targetVersion) return;
+    if (!targetVersion || !canRunTraining) return;
     Modal.confirm({
       title: '确认回滚模型',
       content: `回滚目标版本：${targetVersion}。该操作可能影响线上预测效果，请确认后继续。`,
@@ -486,7 +490,7 @@ export function ModelCenterPage(_props: PageProps) {
               <p><span>训练时长</span><strong>{training.duration_seconds ? `${Math.round(Number(training.duration_seconds) / 60)} 分钟` : '--'}</strong></p>
               <p><span>开始时间</span><strong>{shortDateTime(training.started_at)}</strong></p>
               <p><span>结束时间</span><strong>{shortDateTime(training.ended_at)}</strong></p>
-              <p><span>状态</span><Tag color={training.status === 'success' ? 'success' : 'processing'}>{training.status || '--'}</Tag></p>
+              <p><span>状态</span><Tag color={training.status === 'success' ? 'success' : training.status === 'failed' ? 'error' : 'processing'}>{training.status || '--'}</Tag></p>
             </div>
             {canDiagnoseTasks ? <Button className="model-card-link-button" size="small" icon={<FileSearchOutlined />} onClick={handleViewTrainingLogs}>
               查看训练日志
@@ -524,11 +528,11 @@ export function ModelCenterPage(_props: PageProps) {
                   onChange={setRollbackVersion}
                   options={data.rollback.options.map((item) => ({ value: item.model_version, label: item.label }))}
                   placeholder="暂无可回滚版本"
-                  disabled={!data.rollback.options.length}
+                  disabled={!canRunTraining || !data.rollback.options.length}
                   popupMatchSelectWidth={false}
                 />
               </Tooltip>
-              <Button danger icon={<RetweetOutlined />} disabled={!rollbackVersion} onClick={() => handleRollback()}>回滚</Button>
+              <Button danger icon={<RetweetOutlined />} disabled={!canRunTraining || !rollbackVersion} onClick={() => handleRollback()}>回滚</Button>
             </div>
             <div className="model-warning"><SafetyCertificateOutlined /> 回滚将替换当前 Active 模型，请确认后操作。</div>
           </SectionCard>

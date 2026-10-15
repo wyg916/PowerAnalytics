@@ -1008,45 +1008,33 @@ def record_model_event(
 
 
 def start_model_training(user: CurrentUser | None = None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    engine = postgres_engine()
-    task_id = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:4]}"
-    metadata = {"trigger": "model_center", **(payload or {})}
-    if engine is not None:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO task_runs (
-                        task_id, run_id, task_name, task_kind, status, payload_json,
-                        created_at, updated_at
-                    )
-                    VALUES (
-                        :task_id, :task_id, '模型中心手动训练', 'retrain_model', 'pending',
-                        CAST(:payload AS jsonb), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                    )
-                    ON CONFLICT (task_id) DO NOTHING
-                    """
-                ),
-                {"task_id": task_id, "payload": dumps_json(metadata)},
-            )
-        try:
-            from .task_repository import append_task_log
+    from backend.app.workers.dispatcher import enqueue_task
 
-            append_task_log(
-                task_id,
-                level="info",
-                step="submit",
-                message="模型训练任务已提交，等待训练执行器调度。",
-                status="pending",
-                task_name="模型中心手动训练",
-                task_kind="retrain_model",
-                metadata=metadata,
-                sequence_no=1,
-            )
-        except Exception:
-            pass
-    event = record_model_event(action="training.start", target_version="", user=user, reason="用户从模型中心启动训练", metadata=metadata)
-    return {"task_id": task_id, "status": "pending", "event": event}
+    requested = dict(payload or {})
+    rolling_backtest = bool(requested.get("rolling_backtest", False))
+    metadata = {
+        "trigger": "model_center",
+        **requested,
+        "rolling_backtest": rolling_backtest,
+        "evaluation_profile": "full_rolling_backtest" if rolling_backtest else "train_validation_test",
+        "created_by": user.username if user else "",
+    }
+    result = enqueue_task("retrain_model", metadata)
+    event = record_model_event(
+        action="training.start",
+        target_version="",
+        user=user,
+        reason=str(metadata.get("reason") or "模型中心手动启动训练"),
+        status=str(result.get("status") or "queued"),
+        metadata={
+            **metadata,
+            "task_id": result.get("task_id"),
+            "run_id": result.get("run_id"),
+            "celery_task_id": result.get("celery_task_id"),
+            "queue_name": result.get("queue_name"),
+        },
+    )
+    return {**result, "event": event, "event_recorded": bool(event.get("available"))}
 
 
 def activate_model_version(
@@ -1060,27 +1048,37 @@ def activate_model_version(
     engine = postgres_engine()
     if engine is None:
         return {"success": False, "message": "PostgreSQL 不可用"}
+    safe_version = str(version or "").strip()
+    safe_reason = str(reason or "").strip()
+    if not safe_version:
+        return {"success": False, "message": "模型版本不能为空"}
+    if not safe_reason:
+        return {"success": False, "message": "模型激活原因不能为空"}
     service = ModelFactService(engine)
-    current = service.get_active_model(domain, target_name)
+    event_id = f"mge_{uuid4().hex[:16]}"
     try:
-        active = service.activate_model(version, domain, target_name)
+        active = service.activate_model(
+            safe_version,
+            domain,
+            target_name,
+            governance_event={
+                "event_id": event_id,
+                "action": "model.activate",
+                "operator": user.username if user else "",
+                "reason": safe_reason,
+                "metadata": {"domain": domain, "target_name": target_name, "source_type": "registry"},
+            },
+        )
     except ModelFactError as exc:
         return {"success": False, "message": str(exc)}
-    event = record_model_event(
-        action="model.activate",
-        target_version=version,
-        source_version=str(current.get("model_version") or ""),
-        user=user,
-        reason=reason,
-        metadata={"domain": domain, "target_name": target_name, "source_type": "registry"},
-    )
     return {
         "success": True,
         "active_version": active.get("model_version"),
-        "previous_active_version": current.get("model_version") or "",
+        "previous_active_version": active.get("previous_active_version") or "",
         "domain": domain,
         "target_name": target_name,
-        "event": event,
+        "idempotent": bool(active.get("idempotent")),
+        "event": {"available": True, "event_id": event_id},
     }
 
 
@@ -1095,25 +1093,35 @@ def rollback_model_version(
     engine = postgres_engine()
     if engine is None:
         return {"success": False, "message": "PostgreSQL 不可用"}
+    safe_version = str(version or "").strip()
+    safe_reason = str(reason or "").strip()
+    if not safe_version:
+        return {"success": False, "message": "模型版本不能为空"}
+    if not safe_reason:
+        return {"success": False, "message": "模型回滚原因不能为空"}
     service = ModelFactService(engine)
-    current = service.get_active_model(domain, target_name)
+    event_id = f"mge_{uuid4().hex[:16]}"
     try:
-        active = service.rollback_active_model(version, domain, target_name)
+        active = service.rollback_active_model(
+            safe_version,
+            domain,
+            target_name,
+            governance_event={
+                "event_id": event_id,
+                "action": "model.rollback",
+                "operator": user.username if user else "",
+                "reason": safe_reason,
+                "metadata": {"domain": domain, "target_name": target_name, "source_type": "registry"},
+            },
+        )
     except ModelFactError as exc:
         return {"success": False, "message": str(exc)}
-    event = record_model_event(
-        action="model.rollback",
-        target_version=version,
-        source_version=str(current.get("model_version") or ""),
-        user=user,
-        reason=reason or "模型中心回滚操作",
-        metadata={"domain": domain, "target_name": target_name, "source_type": "registry"},
-    )
     return {
         "success": True,
         "active_version": active.get("model_version"),
-        "previous_active_version": current.get("model_version") or "",
+        "previous_active_version": active.get("previous_active_version") or "",
         "domain": domain,
         "target_name": target_name,
-        "event": event,
+        "idempotent": bool(active.get("idempotent")),
+        "event": {"available": True, "event_id": event_id},
     }

@@ -4,6 +4,7 @@ import {
   DownOutlined,
   LoginOutlined,
   LogoutOutlined,
+  MenuOutlined,
   ProjectOutlined,
   QuestionCircleOutlined,
   ThunderboltFilled,
@@ -25,7 +26,13 @@ function formatBusinessTime(value: unknown) {
   }).format(date).replace(/\//g, '-');
 }
 
-export function HeaderBar({ workspaceMode = 'default' }: { workspaceMode?: 'default' | 'data' }) {
+interface HeaderBarProps {
+  workspaceMode?: 'default' | 'data';
+  onNavigationToggle?: () => void;
+  navigationOpen?: boolean;
+}
+
+export function HeaderBar({ workspaceMode = 'default', onNavigationToggle, navigationOpen = false }: HeaderBarProps) {
   const { openLogin, user, logout } = useAuth();
   const [context, setContext] = useState<any>(null);
   const displayName = user?.display_name || user?.username || '当前用户';
@@ -67,6 +74,16 @@ export function HeaderBar({ workspaceMode = 'default' }: { workspaceMode?: 'defa
 
   return (
     <div className={`header-bar ${dataWorkspace ? 'data-workspace-header' : ''}`}>
+      <Button
+        type="text"
+        shape="circle"
+        className="mobile-nav-toggle"
+        aria-label={navigationOpen ? '关闭主导航' : '打开主导航'}
+        aria-controls="primary-navigation"
+        aria-expanded={navigationOpen}
+        icon={<MenuOutlined />}
+        onClick={onNavigationToggle}
+      />
       <div className="header-brand">
         <div className="header-brand-mark">
           <ThunderboltFilled />
@@ -100,10 +117,10 @@ export function HeaderBar({ workspaceMode = 'default' }: { workspaceMode?: 'defa
           </Badge>
         </Tooltip>
         <Tooltip title="帮助中心">
-          <Button type="text" shape="circle" aria-label="帮助中心" icon={<QuestionCircleOutlined />} onClick={() => { window.location.hash = '/assistant/assistant-faq'; }} />
+          <Button type="text" shape="circle" className="header-help-action" aria-label="帮助中心" icon={<QuestionCircleOutlined />} onClick={() => { window.location.hash = '/assistant/assistant-faq'; }} />
         </Tooltip>
         <Tooltip title="刷新当前视图">
-          <Button type="text" shape="circle" aria-label="刷新当前视图" icon={<SyncOutlined />} onClick={() => window.location.reload()} />
+          <Button type="text" shape="circle" className="header-refresh-action" aria-label="刷新当前视图" icon={<SyncOutlined />} onClick={() => window.location.reload()} />
         </Tooltip>
         <Dropdown trigger={['click']} menu={{ items: menuItems }}>
           <Button type="text" className="user-area">

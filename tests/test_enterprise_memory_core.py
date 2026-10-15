@@ -124,7 +124,8 @@ def memory_table_names() -> tuple[str, ...]:
 def test_enterprise_memory_live_transaction_scope_and_idempotency(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_settings().has_database_url is True
     with get_engine().connect() as probe:
-        assert probe.execute(text("SELECT current_schema()" )).scalar_one() == os.environ["DAY4_TARGET_SCHEMA"]
+        expected_schema = os.environ.get("DAY4_TARGET_SCHEMA") or os.environ["BETA10D_TEST_SCHEMA"]
+        assert probe.execute(text("SELECT current_schema()" )).scalar_one() == expected_schema
     first_session = _identity(session="session_first")
     second_session = _identity(session="session_second")
     other_user = _identity(user="user_b", session="session_other_user")

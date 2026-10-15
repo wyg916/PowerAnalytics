@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+
 from fastapi.testclient import TestClient
 
 from backend.app.api.v1.endpoints import report as report_endpoint
@@ -97,3 +99,31 @@ def test_analyst_cannot_read_strategy_review_history():
             app.dependency_overrides.pop(get_current_user, None)
         else:
             app.dependency_overrides[get_current_user] = previous
+
+
+def test_persisted_builtin_role_defaults_match_runtime_permission_ceilings() -> None:
+    migration = importlib.import_module(
+        "migrations.versions.0024_runtime_role_permissions_v2"
+    )
+
+    assert set(migration.RUNTIME_DEFAULTS) == {
+        "analyst",
+        "developer",
+        "viewer",
+        "reviewer",
+        "operator",
+    }
+    for role_id, permissions in migration.RUNTIME_DEFAULTS.items():
+        assert set(permissions) == ROLE_PERMISSIONS[role_id]
+    assert migration.INTERMEDIATE_DEFAULTS == {
+        "reviewer": [
+            "report:download",
+            "report:read",
+            "report:review",
+            "strategy:read",
+            "strategy:review",
+        ]
+    }
+    assert set(migration.INTERMEDIATE_DEFAULTS["reviewer"]) < set(
+        migration.RUNTIME_DEFAULTS["reviewer"]
+    )

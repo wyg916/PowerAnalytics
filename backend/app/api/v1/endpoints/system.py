@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from ....config import APP_VERSION, PLATFORM_NAME
+from ....config import PLATFORM_NAME
 from ....core.security import CurrentUser, ROLE_PERMISSIONS, get_current_user, require_permission
 from ....data_access import latest_business_summary
 from ....auth.password import hash_password
@@ -34,6 +34,7 @@ from ....data_access import database_runtime_status
 from backend.app.ai_assistant.core.llm_client import get_local_llm_status
 from backend.app.ai_assistant.capability_registry import capability_manifest
 from ....services.rag_runtime_warmup import runtime_warmup_status
+from ....runtime_identity import runtime_identity_payload
 
 
 router = APIRouter()
@@ -44,7 +45,7 @@ def health() -> dict:
     return {
         "ok": True,
         "platform": PLATFORM_NAME,
-        "version": APP_VERSION,
+        **runtime_identity_payload(),
         "rag_runtime_warmup": runtime_warmup_status(),
     }
 

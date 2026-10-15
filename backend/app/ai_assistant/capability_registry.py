@@ -116,6 +116,9 @@ ACTION_PERMISSIONS = {
     "data.export": "data:export",
     "strategy.generate": "strategy:generate",
     "report.generate": "report:generate",
+    "report.approve": "report:review",
+    "report.reject": "report:review",
+    "report.publish": "report:publish",
     "settings.write": "settings:write",
     "assistant.use": "assistant:use",
     "assistant.export": "assistant:export",
@@ -128,7 +131,7 @@ def capability_manifest(permissions: list[str]) -> dict[str, Any]:
     return {
         "routes": {key: permits(value) for key, value in ROUTE_PERMISSIONS.items()},
         "actions": {key: permits(value) for key, value in ACTION_PERMISSIONS.items()},
-        "policy_version": "v2.12.0",
+        "policy_version": "v2.13.0-rc1",
     }
 
 

@@ -902,7 +902,7 @@
 .report-workbench .report-process-steps small {
   width: 100%;
   overflow: hidden;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1074,5 +1074,119 @@
 
   .report-workbench .report-status-kpi-row .metric-card {
     padding-block: 6px;
+  }
+}
+
+@media (max-width: 900px) {
+  .report-workbench {
+    --report-toolbar-height: auto;
+    --report-kpi-height: auto;
+    height: auto;
+    min-height: calc(100dvh - var(--header-height) - 24px);
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .report-workbench .report-page-toolbar {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-items: stretch;
+    padding: 10px;
+  }
+
+  .report-workbench .report-filter-bar,
+  .report-workbench .report-filter-controls,
+  .report-workbench .report-filter-lower,
+  .report-workbench .report-filter-actions {
+    width: 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .report-workbench .report-filter-bar label,
+  .report-workbench .report-filter-bar .ant-select,
+  .report-workbench .report-filter-bar.is-review .ant-select,
+  .report-workbench .report-filter-search,
+  .report-workbench .report-filter-bar.is-review .report-filter-search {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .report-workbench .report-status-kpi-row,
+  .report-workbench .report-status-kpi-row .metric-card {
+    height: auto;
+    min-height: 84px;
+  }
+
+  .report-workbench .report-status-kpi-row .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-workbench .report-workspace-grid,
+  .report-workbench .report-main-grid,
+  .report-workbench .report-review-grid {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) !important;
+    overflow: visible;
+  }
+
+  .report-workbench .report-workspace-right,
+  .report-main-grid > .report-workspace-right,
+  .report-review-grid > .report-workspace-right {
+    height: auto;
+    min-height: 0;
+    grid-column: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .report-workbench .report-list-card,
+  .report-workbench .report-preview-card,
+  .report-workbench .report-review-preview,
+  .report-workbench .report-review-preview-shell {
+    height: auto;
+    min-height: 320px;
+    overflow: hidden;
+  }
+
+  .report-workbench .report-list-scroll {
+    max-height: 420px;
+  }
+
+  .report-workbench .report-preview-split,
+  .report-workbench .report-preview-card .report-preview-split {
+    height: auto;
+    min-height: 520px;
+    max-height: none;
+    flex-basis: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(250px, auto));
+  }
+
+  .report-workbench .report-review-info-grid {
+    height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .report-workbench .report-status-kpi-row .metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .report-workbench .report-list-head,
+  .report-workbench .report-list-item {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+
+  .report-workbench .report-list-head > :nth-child(2),
+  .report-workbench .report-list-item > :nth-child(2) {
+    display: none;
   }
 }

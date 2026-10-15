@@ -9011,7 +9011,7 @@ a {
   display: block;
   margin-bottom: 2px;
   color: var(--color-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.25;
 }
 
@@ -13468,5 +13468,273 @@ a {
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+}
+
+/* T008 responsive shell closure: the fixed desktop navigation becomes an
+   explicit off-canvas drawer on narrow screens, while page content keeps the
+   full viewport width. */
+.mobile-nav-toggle,
+.mobile-sidebar-backdrop {
+  display: none !important;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    --page-padding: 12px;
+  }
+
+  .content-shell:has(.assistant-workspace-page) > .page-container > .page-header-area {
+    margin-inline: -12px;
+  }
+
+  .app-shell .assistant-title-actions {
+    position: static;
+    top: auto;
+    z-index: auto;
+    height: auto;
+    min-height: 36px;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    margin: 8px 0;
+  }
+
+  .app-shell .assistant-action-row {
+    min-height: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto;
+  }
+
+  .app-shell .assistant-action-row .ant-btn {
+    height: auto;
+    min-height: 38px;
+    white-space: normal;
+  }
+
+  .app-shell > .header-bar,
+  .app-shell.data-workspace-shell > .header-bar.data-workspace-header,
+  .app-shell.app-shell--report > .header-bar {
+    gap: 8px;
+    padding-inline: 10px !important;
+  }
+
+  .mobile-nav-toggle {
+    display: inline-flex !important;
+    flex: 0 0 36px;
+  }
+
+  .header-brand {
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 8px;
+  }
+
+  .header-brand-mark {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+    border-radius: 8px;
+  }
+
+  .header-brand strong {
+    font-size: 15px;
+  }
+
+  .header-context,
+  .data-workspace-context {
+    display: none !important;
+  }
+
+  .header-actions {
+    gap: 2px !important;
+    margin-inline-start: auto;
+  }
+
+  .header-actions .ant-space-item {
+    flex: 0 0 auto;
+  }
+
+  .header-actions .user-area {
+    width: 36px;
+    min-width: 36px;
+    padding-inline: 0;
+  }
+
+  .header-actions .user-area strong,
+  .header-actions .user-area .ant-tag,
+  .header-actions .user-area .anticon-down {
+    display: none;
+  }
+
+  .app-shell .app-body > .sidebar-shell,
+  .app-shell .app-body > .sidebar-shell.collapsed {
+    width: min(82vw, 288px);
+    height: calc(100dvh - var(--header-height));
+    flex-basis: min(82vw, 288px);
+    visibility: visible;
+    transform: translateX(0);
+    box-shadow: 12px 0 30px rgba(15, 23, 42, 0.2);
+    transition: transform 0.2s ease, visibility 0.2s ease;
+  }
+
+  .app-shell .app-body > .sidebar-shell.collapsed {
+    visibility: hidden;
+    transform: translateX(-105%);
+  }
+
+  .sidebar-shell.compact-navigation.collapsed .collapse-entry {
+    display: none;
+  }
+
+  .app-shell .app-body > .main-shell,
+  .app-shell .app-body > .sidebar-shell.collapsed + .mobile-sidebar-backdrop + .main-shell,
+  .app-shell .app-body > .sidebar-shell.collapsed + .main-shell {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    top: var(--header-height);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: calc(var(--z-sidebar) - 1);
+    display: block !important;
+    border: 0;
+    background: rgba(15, 23, 42, 0.34);
+  }
+
+  .app-shell .main-shell > .content-shell,
+  .app-shell.data-workspace-shell .main-shell.data-workspace-main > .content-shell,
+  .app-shell.app-shell--report .main-shell > .content-shell {
+    padding-inline: var(--page-padding) !important;
+  }
+
+  .page-heading-unified,
+  .page-heading-unified .page-heading-title-row,
+  .page-heading-unified .page-heading-utility,
+  .page-heading-unified .page-heading-context,
+  .page-heading-unified .page-heading-filters,
+  .page-heading-unified .page-heading-actions,
+  .filter-bar,
+  .filter-bar-fields,
+  .filter-bar-actions,
+  .settings-tabs-row,
+  .settings-tab-actions {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .page-heading-unified .page-heading-utility,
+  .page-heading-unified .page-heading-context,
+  .page-heading-unified .page-heading-filters,
+  .page-heading-unified .page-heading-actions,
+  .settings-tabs-row,
+  .settings-tab-actions {
+    width: 100%;
+  }
+
+  .settings-tabs-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .task-workbench-page {
+    height: auto;
+    min-height: calc(100dvh - var(--header-height) - 24px);
+  }
+
+  .task-titlebar,
+  .task-summary-grid,
+  .task-body-grid,
+  .task-main-grid,
+  .settings-status-grid,
+  .settings-bottom-grid,
+  .settings-user-layout,
+  .settings-api-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-filter-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .task-filter-actions .ant-select,
+  .task-filter-actions .ant-picker-range,
+  .task-filter-actions .ant-input-affix-wrapper,
+  .task-filter-actions > .ant-input {
+    width: min(100%, 260px);
+  }
+
+  .task-list-card,
+  .task-trend-card,
+  .task-queue-card {
+    min-height: 280px;
+    flex-basis: auto;
+  }
+
+  .task-card-head {
+    height: auto;
+    align-items: stretch;
+    flex-direction: column;
+    padding-block: 9px;
+  }
+
+  .task-card-head > div {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .task-card-head > .ant-space {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+    gap: 8px !important;
+  }
+
+  .task-card-head > .ant-space .ant-btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .header-help-action,
+  .header-refresh-action {
+    display: none !important;
+  }
+
+  .header-brand strong {
+    max-width: 156px;
+    font-size: 14px;
+  }
+
+  .task-kpi-grid,
+  .task-health-card .task-health-grid,
+  .settings-param-grid,
+  .settings-security-grid,
+  .settings-api-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-filter-actions > span,
+  .task-filter-actions .ant-select,
+  .task-filter-actions .ant-picker-range,
+  .task-filter-actions .ant-input-affix-wrapper,
+  .task-filter-actions > .ant-input,
+  .task-filter-actions .ant-btn {
+    width: 100%;
+  }
+
+  .settings-status-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+  }
+
+  .settings-status-row .ant-btn-link {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 }

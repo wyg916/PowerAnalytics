@@ -38,13 +38,8 @@ const taskOptions = [
   { value: 'embedding_refresh', label: 'Embedding 刷新' },
   { value: 'report_generate', label: '报告生成' },
   { value: 'sync_core_data', label: '数据同步' },
-  { value: 'data_clean', label: '数据清洗' },
   { value: 'price_predict', label: '电价预测' },
-  { value: 'load_predict', label: '负荷预测' },
-  { value: 'strategy_gen', label: '策略生成' },
   { value: 'report_daily', label: '收益分析' },
-  { value: 'monitor_rt', label: '异常监测' },
-  { value: 'model_train', label: '模型训练' },
   { value: 'fast_forecast', label: '快速预测' },
   { value: 'health_check', label: '健康检查' }
 ];
@@ -186,8 +181,8 @@ export function TaskCenterPage(_props: PageProps) {
   const [taskData, setTaskData] = useState<any>({ tasks: [], metrics: [], health: {}, retryQueue: [], recentLogs: [], queueRows: [], trendRows: [] });
   const [loading, setLoading] = useState(true);
   const { canPerformAction } = useAuth();
-  const canRunTask = canPerformAction('task:manage');
-  const canManageSchedules = canPerformAction('task:manage');
+  const canRunTask = canPerformAction('task:run');
+  const canManageSchedules = canPerformAction('task:run');
   const canDiagnoseTasks = canPerformAction('task:diagnostics');
   const [createOpen, setCreateOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -235,6 +230,10 @@ export function TaskCenterPage(_props: PageProps) {
   }, [loadData]);
 
   async function runTask(kind = selectedTaskKind) {
+    if (!workerReady) {
+      message.error('当前没有可接收任务的 Worker，已禁止创建新任务。');
+      return;
+    }
     const safeKind = kind === 'all' ? 'health_check' : kind;
     const res = await api.taskStart({
       task_type: safeKind,
@@ -250,6 +249,10 @@ export function TaskCenterPage(_props: PageProps) {
   async function retryTask(taskId?: string) {
     if (!taskId) {
       message.warning('缺少 task_id');
+      return;
+    }
+    if (!workerReady) {
+      message.error('当前没有可接收任务的 Worker，已禁止重试。');
       return;
     }
     const res = await api.taskRetry(taskId);
@@ -330,6 +333,7 @@ export function TaskCenterPage(_props: PageProps) {
   const rawTasks = Array.isArray(taskData.tasks) ? taskData.tasks : [];
   const tasks = useMemo(() => rawTasks, [rawTasks]);
   const health = taskData.health || {};
+  const workerReady = health.dispatch_ready === true;
   const retryRows = Array.isArray(taskData.retryQueue) ? taskData.retryQueue : [];
   const queueRows = Array.isArray(taskData.queueRows) ? taskData.queueRows : [];
   const recentLogRows = Array.isArray(taskData.recentLogs) ? taskData.recentLogs : [];
@@ -398,10 +402,10 @@ export function TaskCenterPage(_props: PageProps) {
   }), [queueRows]);
 
   const healthCards = [
-    { label: 'execution_mode', value: health.execution_mode || 'distributed', tone: 'blue', icon: <CodeOutlined /> },
-    { label: 'Redis', value: health.redis?.ok ? '运行中' : '待确认', tone: 'green', icon: <DatabaseOutlined /> },
-    { label: 'Celery', value: health.celery?.ok || health.celery_available ? '运行中' : '待确认', tone: 'green', icon: <CloudServerOutlined /> },
-    { label: 'active_workers', value: `${(health.active_workers || []).length || 0} / 20`, tone: 'green', icon: <TeamOutlined /> },
+    { label: 'execution_mode', value: health.execution_mode || '未配置', tone: 'blue', icon: <CodeOutlined /> },
+    { label: 'Redis', value: health.redis?.ok ? '运行中' : '不可用', tone: health.redis?.ok ? 'green' : 'red', icon: <DatabaseOutlined /> },
+    { label: 'Celery', value: health.celery?.ok || health.celery_available ? '运行中' : '不可用', tone: health.celery?.ok || health.celery_available ? 'green' : 'red', icon: <CloudServerOutlined /> },
+    { label: 'active_workers', value: String((health.active_workers || []).length || 0), tone: workerReady ? 'green' : 'red', icon: <TeamOutlined /> },
     { label: 'running', value: runningCount, tone: 'blue', icon: <PlayCircleOutlined /> },
     { label: 'pending', value: pendingCount, tone: 'blue', icon: <ClockCircleOutlined /> },
     { label: 'failed', value: failedCount, tone: 'red', icon: <WarningOutlined /> },
@@ -436,7 +440,7 @@ export function TaskCenterPage(_props: PageProps) {
             menu={{
               items: [
                 { key: 'cancel', label: '取消任务', disabled: !canCancelTask(record.status) },
-                { key: 'retry', label: '立即重试', disabled: !canRetryTask(record) }
+                { key: 'retry', label: '立即重试', disabled: !workerReady || !canRetryTask(record) }
               ],
               onClick: ({ key }) => {
                 if (key === 'cancel') cancelTask(record.task_id);
@@ -455,7 +459,7 @@ export function TaskCenterPage(_props: PageProps) {
   const logColumns = [
     { title: '时间', width: 76, render: (_: any, record: any) => shortTime(record.updated_at || record.created_at) },
     { title: '任务名称', render: (_: any, record: any) => taskName(record) },
-    { title: 'Worker', width: 86, dataIndex: 'worker_id', render: (value: string) => value || 'worker-01' },
+    { title: 'Worker', width: 86, dataIndex: 'worker_id', render: (value: string) => value || '未分配' },
     { title: 'Celery Task ID', width: 150, dataIndex: 'celery_task_id', render: shortId },
     { title: '消息', render: (_: any, record: any) => record.error_message || record.message || (record.status === 'success' ? '任务执行完成' : statusText(record.status)) }
   ];
@@ -465,7 +469,7 @@ export function TaskCenterPage(_props: PageProps) {
     { title: '任务名称', render: (_: any, record: any) => taskName(record) },
     { title: '原因', render: (_: any, record: any) => record.error_message || statusText(record.status) },
     { title: '处理建议', render: (_: any, record: any) => failureAdvice(record) },
-    ...(canManageSchedules ? [{ title: '操作', width: 98, render: (_: any, record: any) => <Button className="task-retry-button" size="small" disabled={!canRetryTask(record)} onClick={() => retryTask(record.task_id)}>立即重试</Button> }] : [])
+    ...(canManageSchedules ? [{ title: '操作', width: 98, render: (_: any, record: any) => <Button className="task-retry-button" size="small" disabled={!workerReady || !canRetryTask(record)} onClick={() => retryTask(record.task_id)}>立即重试</Button> }] : [])
   ];
 
   const queueColumns = [
@@ -498,7 +502,7 @@ export function TaskCenterPage(_props: PageProps) {
             label: '启动任务',
             icon: <PlayCircleOutlined />,
             type: 'primary',
-            hidden: !canRunTask,
+            hidden: !canRunTask || !workerReady,
             disabled: selectedTaskKind === 'all',
             disabledReason: selectedTaskKind === 'all' ? '请先选择具体任务类型' : undefined,
             onClick: () => runTask()

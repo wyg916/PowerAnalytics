@@ -37,7 +37,7 @@ export const childPermissions: Record<string, string[]> = {
   'report-daily': ['report:read'],
   'report-weekly': ['report:read'],
   'report-review': ['report:read', 'report:review'],
-  'report-publish': ['report:read', 'report:review'],
+  'report-publish': ['report:read', 'report:publish'],
   'model-active': ['model:read'],
   'model-candidate': ['model:read'],
   'model-error': ['model:read'],
@@ -62,6 +62,9 @@ export const actionPermissions: Record<string, string> = {
   'data.export': 'data:export',
   'strategy.generate': 'strategy:generate',
   'report.generate': 'report:generate',
+  'report.approve': 'report:review',
+  'report.reject': 'report:review',
+  'report.publish': 'report:publish',
   'settings.write': 'settings:write',
   'assistant.use': 'assistant:use',
   'assistant.export': 'assistant:export'

@@ -152,7 +152,7 @@ function OverviewInsight({ data }: { data: any }) {
   return (
     <section className="strategy-card strategy-advice-card">
       <div className="strategy-card-head"><h2>策略建议说明</h2><div><Tag color={data?.strategyUsable ? 'success' : 'warning'}>{data?.strategyUsable ? '人工复核后参考' : '发布门禁未通过'}</Tag><Tag color="warning">需人工确认</Tag></div></div>
-      <InsightBlock tone={data?.strategyUsable ? 'green' : 'red'} title="结论">{data?.strategyUsable ? '已形成通过治理门禁的策略记录；实际执行前仍须结合合同、设备与当前市场复核。' : `当前记录状态为${data?.strategyStatusLabel || '不可用'}；使用前请完成业务复核和发布门禁校验。`}</InsightBlock>
+      <InsightBlock tone={data?.strategyUsable ? 'green' : 'red'} title="结论">{data?.strategyUsable ? '已形成通过治理门禁的策略记录；实际执行前仍须结合合同、设备与当前市场复核。' : `当前记录状态为${data?.strategyStatusLabel || '不可用'}，不可作为当前策略；使用前请完成业务复核和发布门禁校验。`}</InsightBlock>
       <InsightBlock tone="blue" title="业务建议">
         <ul><li>低价候选时段：{lowLabel}</li><li>高风险候选时段：{highLabel}</li><li>储能动作仅作为辅助决策建议。</li></ul>
       </InsightBlock>
@@ -449,7 +449,7 @@ function ReviewDetail({ row, onAction, permissions, reviewHistory }: {
   useEffect(() => setComment(''), [row?.key]);
   return (
     <section className="strategy-card review-detail-panel">
-      <div className="strategy-card-head"><h2>复核详情</h2><Tag color="blue">仅决策支持，不自动执行</Tag></div>
+      <div className="strategy-card-head"><h2>复核详情</h2><Tag color="blue">只读事实，不自动交易、不控制设备</Tag></div>
       {row ? (
         <>
           <div className="review-detail-scroll">
@@ -471,7 +471,7 @@ function ReviewDetail({ row, onAction, permissions, reviewHistory }: {
               <Button danger onClick={() => onAction(row, 'reject', comment)}>驳回</Button>
               <Button onClick={() => onAction(row, 'return', comment)}>退回补充</Button>
             </> : null}
-            {row.status === 'approved' && permissions.canPublish ? <Tooltip title={row.isStale ? (row.staleReason || '当前记录未通过发布门禁，点击查看原因') : '发布仅形成受控记录，不触发执行'}><Button type="primary" onClick={() => onAction(row, 'publish', comment)}>发布策略记录</Button></Tooltip> : null}
+            {row.status === 'approved' && permissions.canPublish ? <Tooltip title={row.isStale ? (row.staleReason || '当前记录未通过发布门禁，请生成并复核当前有效策略') : '发布仅形成受控记录，不触发执行'}><Button type="primary" disabled={row.isStale} onClick={() => onAction(row, 'publish', comment)}>发布策略记录</Button></Tooltip> : null}
             {!['draft', 'pending_review', 'approved'].includes(row.status) && <Tag color={statusColor(row.status)}>该状态无可用人工动作</Tag>}
           </div>
         </>

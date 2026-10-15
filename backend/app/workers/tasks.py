@@ -151,7 +151,11 @@ def run_command_task(kind: str, task_id: str, run_id: str) -> dict[str, Any]:
     started = datetime.now()
     command = command_for_kind(kind)
     policy = task_policy(kind)
-    timeout_seconds = _task_timeout_seconds(kind, task_id)
+    accepted_record = _current_record(task_id)
+    task_payload = dict(accepted_record.get("payload") or {})
+    accepted_queue_name = str(accepted_record.get("queue_name") or queue_for_kind(kind))
+    accepted_celery_task_id = str(accepted_record.get("celery_task_id") or "")
+    timeout_seconds = int(accepted_record.get("timeout_seconds") or policy.timeout_seconds)
     timeout_at_dt = timeout_at(started, timeout_seconds)
     paths = project_paths()
     paths.log_dir.mkdir(parents=True, exist_ok=True)
@@ -168,8 +172,12 @@ def run_command_task(kind: str, task_id: str, run_id: str) -> dict[str, Any]:
             progress=10,
             message="running",
             worker_id=socket.gethostname(),
+            celery_task_id=accepted_celery_task_id,
             timeout_seconds=timeout_seconds,
             timeout_at_value=timeout_at_dt,
+            payload=task_payload,
+            metadata=dict(accepted_record.get("metadata") or {}),
+            queue_name=accepted_queue_name,
         ),
         status="running",
     )
@@ -177,6 +185,10 @@ def run_command_task(kind: str, task_id: str, run_id: str) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["NO_PAUSE"] = "1"
+    env["PIPELINE_RUN_ID"] = run_id
+    env["PIPELINE_TASK_ID"] = task_id
+    if kind == "retrain_model":
+        env["ENABLE_ROLLING_BACKTEST"] = "1" if bool(task_payload.get("rolling_backtest")) else "0"
     start_counter = time.perf_counter()
     with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
         log_file.write(f"[{started.isoformat(sep=' ', timespec='seconds')}] Celery task started: {kind}\n")
@@ -250,9 +262,13 @@ def run_command_task(kind: str, task_id: str, run_id: str) -> dict[str, Any]:
         message=status,
         result_ref=str(log_path),
         worker_id=socket.gethostname(),
+        celery_task_id=accepted_celery_task_id,
         timeout_seconds=timeout_seconds,
         timeout_at_value=timeout_at_dt,
         max_retries=policy.max_retries,
+        payload=task_payload,
+        metadata=dict(accepted_record.get("metadata") or {}),
+        queue_name=accepted_queue_name,
         cancel_reason="cancel requested" if status == "cancelled" else "",
         cancelled_at=ended if status == "cancelled" else None,
     )
@@ -518,8 +534,35 @@ def run_report_daily_task(task_id: str, run_id: str, payload: dict[str, Any] | N
 
 
 @_task_decorator("power_trading.health_check_task")
-def health_check_task() -> dict[str, Any]:
-    return {"status": "ok", "worker_id": socket.gethostname(), "checked_at": datetime.now().isoformat(sep=" ", timespec="seconds")}
+def health_check_task(
+    task_id: str = "",
+    run_id: str = "",
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def probe(_payload: dict[str, Any], context: TaskExecutionContext | None = None) -> dict[str, Any]:
+        result = {
+            "status": "ok",
+            "worker_id": socket.gethostname(),
+            "checked_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        }
+        if context is not None:
+            context.log(
+                "execute",
+                "worker health probe completed",
+                progress=90,
+                metadata=result,
+            )
+        return result
+
+    if not task_id:
+        return probe(payload or {})
+    return _run_python_task(
+        task_id=task_id,
+        run_id=run_id or datetime.now().strftime("%Y%m%d_%H%M%S"),
+        kind="health_check",
+        payload=payload,
+        handler=probe,
+    )
 
 
 @_task_decorator("power_trading.sync_core_data_task")

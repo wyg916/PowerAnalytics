@@ -27,7 +27,7 @@ test('报告中心业务内容不展示指定的过期追溯详情', () => {
 
 test('报告路由使用独立内容工作台并完整保留左侧目录', () => {
   assert.equal(layoutSource.includes("route === 'report' ? 'app-shell--report' : ''"), true);
-  assert.equal(layoutSource.includes('<Sidebar collapsed={collapsed} route={route}'), true);
+  assert.match(layoutSource, /<Sidebar[\s\S]*?collapsed=\{collapsed\}[\s\S]*?route=\{route\}/);
   assert.equal(layoutSource.includes("route !== 'report' && <Sidebar"), false);
   for (const marker of ['report-page-toolbar', 'report-workspace-grid', '<ReportListCard', 'report-workspace-right', '<ReportStatusKpiRow']) {
     assert.equal(source.includes(marker), true, `应保留报告工作台结构：${marker}`);
@@ -46,9 +46,9 @@ test('报告中心继续保留阻塞状态和真实功能入口', () => {
     "'forbidden'",
     'onGenerate={generateReport}',
     'onDownload={downloadReport}',
-    "review('approve')",
-    "review('reject')",
-    "review('publish')"
+    "confirmReview('approve')",
+    "confirmReview('reject')",
+    "confirmReview('publish')"
   ]) {
     assert.equal(source.includes(marker), true, `应保留状态或真实功能标记：${marker}`);
   }

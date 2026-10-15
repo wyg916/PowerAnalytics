@@ -63,6 +63,25 @@ test('Phase 2 AppShell fixes navigation and delegates scrolling to the main cont
   assert.match(styles, /@media \(max-width: 1366px\), \(max-height: 768px\)/);
 });
 
+test('T008 compact navigation releases page width and report center collapses to one column', async () => {
+  const [app, layout, header, sidebar, styles, reportStyles] = await Promise.all([
+    read('../src/app/App.tsx'),
+    read('../src/layout/BasicLayout.tsx'),
+    read('../src/layout/HeaderBar.tsx'),
+    read('../src/layout/Sidebar.tsx'),
+    read('../src/styles.css'),
+    read('../src/pages/report/report-center-layout.css')
+  ]);
+  assert.match(app, /compactNavigationQuery = '\(max-width: 900px\)'/);
+  assert.match(app, /if \(compactNavigation\) setCollapsed\(true\)/);
+  assert.match(layout, /mobile-sidebar-backdrop/);
+  assert.match(header, /aria-controls="primary-navigation"/);
+  assert.match(sidebar, /id="primary-navigation"/);
+  assert.match(styles, /@media \(max-width: 900px\)[\s\S]*?sidebar-shell\.collapsed[\s\S]*?translateX\(-105%\)/);
+  assert.match(styles, /@media \(max-width: 900px\)[\s\S]*?\.main-shell[\s\S]*?margin-inline-start:\s*0/);
+  assert.match(reportStyles, /@media \(max-width: 900px\)[\s\S]*?report-review-grid[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) !important/);
+});
+
 test('AttachmentComposer covers select, drag/drop, clipboard and explicit browser fallback', async () => {
   const source = await read('../src/features/globalAssistant/AttachmentComposer.tsx');
   assert.match(source, /onDrop/);

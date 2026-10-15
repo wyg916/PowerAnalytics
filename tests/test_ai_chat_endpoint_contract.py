@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fitz
 from fastapi.testclient import TestClient
 
 from backend.app.api.v1.endpoints import assistant as assistant_endpoint
@@ -136,6 +137,72 @@ def test_ai_chat_stream_reuses_answer_chat(monkeypatch):
     assert captured["question"] == "测试流式问答"
 
 
+def _chatbi_result(answer: str = "查询返回 1 组可复算结果。平均日前电价最高值为 103 元/MWh。") -> dict:
+    return {
+        "available": True,
+        "state": "success",
+        "answer": answer,
+        "answer_source": "grounded_narrative",
+        "result_dataset": {"row_count": 1, "result_hash": "r" * 64},
+        "narrative": {"text": answer, "citations": []},
+        "planner": {"provider": "deepseek", "model": "deepseek-chat", "fallback": False},
+        "lineage": {"analysis_plan_id": "plan_test", "result_hash": "r" * 64},
+    }
+
+
+def test_ai_chat_auto_route_uses_governed_chatbi_final_answer(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_chatbi_turn(**kwargs):
+        captured.update(kwargs)
+        return _chatbi_result()
+
+    monkeypatch.setattr(assistant_endpoint, "execute_chatbi_turn", fake_chatbi_turn)
+
+    response = client.post("/api/ai/chat", json={"question": "数据库最新的天气数据是哪天？"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["assistant_route"] == "CHATBI"
+    assert payload["answer"] == payload["narrative"]["text"]
+    assert payload["answer"] != payload["state"]
+    assert payload["answer_source"] == "grounded_narrative"
+    assert captured["requested_provider"] == "deepseek"
+
+
+def test_ai_chat_explicit_chatbi_rejects_status_word_as_final_answer(monkeypatch):
+    monkeypatch.setattr(
+        assistant_endpoint,
+        "execute_chatbi_turn",
+        lambda **_kwargs: _chatbi_result(answer="success"),
+    )
+
+    response = client.post(
+        "/api/ai/chat",
+        json={"question": "按市场分析平均日前电价", "mode": "chatbi"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "CHATBI_ANSWER_CONTRACT_INVALID"
+
+
+def test_ai_chat_stream_emits_chatbi_narrative_not_state_word(monkeypatch):
+    monkeypatch.setattr(
+        assistant_endpoint,
+        "execute_chatbi_turn",
+        lambda **_kwargs: _chatbi_result(),
+    )
+
+    response = client.post(
+        "/api/ai/chat/stream",
+        json={"question": "按市场分析平均日前电价", "mode": "chatbi"},
+    )
+
+    assert response.status_code == 200
+    assert "平均日前电价最高值" in response.text
+    assert '"text": "success"' not in response.text
+
+
 def test_ai_export_conversation_docx():
     response = client.post(
         "/api/ai/chat/sessions/export?format=docx",
@@ -155,14 +222,65 @@ def test_ai_export_conversation_docx():
     assert response.content.startswith(b"PK")
 
 
-def test_ai_export_pdf_reports_unavailable():
+def test_ai_export_conversation_pdf_is_searchable_and_redacted():
     response = client.post(
         "/api/ai/chat/sessions/export?format=pdf",
-        json={"session_id": "export_session", "messages": []},
+        json={
+            "session_id": "export_session",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请分析明日电价，password=must-not-leak",
+                    "created_at": "10:00",
+                    "trace": {"hidden": True},
+                },
+                {"role": "assistant", "content": "结论：已生成分析。", "created_at": "10:01"},
+                {"role": "system", "content": "hidden system prompt"},
+            ],
+        },
     )
 
-    assert response.status_code == 501
-    assert "PDF" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.content.startswith(b"%PDF")
+    document = fitz.open(stream=response.content, filetype="pdf")
+    exported_text = "".join(page.get_text() for page in document).replace("\xa0", " ")
+    assert "AI 助手会话导出" in exported_text
+    assert "请分析明日电价" in exported_text
+    assert "must-not-leak" not in exported_text
+    assert "[REDACTED]" in exported_text
+    assert "hidden system prompt" not in exported_text
+    assert "hidden" not in exported_text
+
+
+def test_ai_export_conversation_rejects_oversized_message_count():
+    response = client.post(
+        "/api/ai/chat/sessions/export?format=pdf",
+        json={
+            "session_id": "export_session",
+            "messages": [{"role": "user", "content": "x"}] * (assistant_endpoint.MAX_EXPORT_MESSAGES + 1),
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_ai_export_conversation_pdf_paginates_long_chinese_content():
+    response = client.post(
+        "/api/ai/chat/sessions/export?format=pdf",
+        json={
+            "session_id": "long_export_session",
+            "messages": [
+                {"role": "user", "content": f"第 {index} 条：" + "新能源经营分析依据。" * 30}
+                for index in range(24)
+            ],
+        },
+    )
+    assert response.status_code == 200
+    document = fitz.open(stream=response.content, filetype="pdf")
+    assert document.page_count >= 3
+    text = "".join(page.get_text() for page in document).replace("\xa0", " ")
+    assert "第 0 条" in text and "第 23 条" in text
+    assert f"第 {document.page_count} / {document.page_count} 页" in text
 
 
 def test_ai_upload_attachment_saves_metadata(monkeypatch, tmp_path):
@@ -185,8 +303,8 @@ def test_ai_upload_attachment_saves_metadata(monkeypatch, tmp_path):
     )
     assert detail.status_code == 200
     assert "chunks" not in detail.json() and "properties" not in detail.json()
-    deleted = client.delete(f"/api/ai/attachments/{payload['attachment_id']}")
-    deleted_again = client.delete(f"/api/ai/attachments/{payload['attachment_id']}")
+    deleted = client.delete(f"/api/ai/attachments/{payload['attachment_id']}?session_id=sess_upload")
+    deleted_again = client.delete(f"/api/ai/attachments/{payload['attachment_id']}?session_id=sess_upload")
     assert deleted.status_code == 200 and deleted.json()["status"] == "deleted"
     assert deleted_again.status_code == 200 and deleted_again.json()["status"] == "deleted"
     assert [item["action"] for item in audits] == [
@@ -223,16 +341,22 @@ def test_attachment_endpoint_enforces_jwt_user_and_tenant_scope(monkeypatch, tmp
         attachment_id = uploaded.json()["attachment_id"]
 
         app.dependency_overrides[get_current_user] = lambda: jwt_user("user-b", "tenant-a")
-        assert client.get(f"/api/ai/attachments/{attachment_id}").status_code == 404
-        assert client.delete(f"/api/ai/attachments/{attachment_id}").status_code == 404
+        assert client.get(f"/api/ai/attachments/{attachment_id}?session_id=sess-owned").status_code == 404
+        assert client.delete(f"/api/ai/attachments/{attachment_id}?session_id=sess-owned").status_code == 404
 
         app.dependency_overrides[get_current_user] = lambda: jwt_user("user-a", "tenant-b")
-        assert client.get(f"/api/ai/attachments/{attachment_id}").status_code == 404
+        assert client.get(f"/api/ai/attachments/{attachment_id}?session_id=sess-owned").status_code == 404
 
         app.dependency_overrides[get_current_user] = lambda: jwt_user("user-a", "tenant-a")
+        assert client.get(f"/api/ai/attachments/{attachment_id}").status_code == 422
+        assert client.delete(f"/api/ai/attachments/{attachment_id}").status_code == 422
         wrong_session = client.get(f"/api/ai/attachments/{attachment_id}?session_id=sess-other")
         assert wrong_session.status_code == 403
-        assert client.get("/api/ai/attachments/att_00000000000000000000000000000000").status_code == 404
+        wrong_delete = client.delete(f"/api/ai/attachments/{attachment_id}?session_id=sess-other")
+        assert wrong_delete.status_code == 403
+        assert client.get(
+            "/api/ai/attachments/att_00000000000000000000000000000000?session_id=sess-owned"
+        ).status_code == 404
     finally:
         if original is None:
             app.dependency_overrides.pop(get_current_user, None)
@@ -296,7 +420,7 @@ def test_file_chat_binds_attachment_ids_returns_citation_and_rejects_deleted_reu
     assert captured["attachment_ids"] == [attachment_id]
     assert captured["knowledge_scope"] == "attachments"
 
-    assert client.delete(f"/api/ai/attachments/{attachment_id}").status_code == 200
+    assert client.delete(f"/api/ai/attachments/{attachment_id}?session_id=sess_file").status_code == 200
     reused = client.post("/api/ai/chat", json={
         "question": "再次使用附件。",
         "session_id": "sess_file",

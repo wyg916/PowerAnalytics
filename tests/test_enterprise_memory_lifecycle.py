@@ -11,6 +11,7 @@ from backend.app.ai.identity_context import IdentityContext
 from backend.app.ai_assistant.memory import enterprise_memory as core
 from backend.app.ai_assistant.memory import lifecycle
 from backend.app.db.session import get_engine
+from scripts import day5_memory_worker_runtime as memory_worker
 
 
 def identity(user: str = "user_a", *, tenant: str = "tenant_a", admin: bool = False) -> IdentityContext:
@@ -155,3 +156,34 @@ def test_legal_hold_admin_scope_archive_and_retention() -> None:
     lifecycle.process_outbox_batch()
     with core._engine().connect() as connection:
         assert connection.execute(text("SELECT status FROM ai_memory_deletion_jobs WHERE job_id=:job"), {"job": late_request["job_id"]}).scalar_one() == "completed"
+
+
+@pytest.mark.skipif(os.environ.get("DAY5_MEMORY_LIVE_TEST") != "1", reason="isolated PostgreSQL gate only")
+def test_memory_worker_once_executes_real_deletion_batch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    owner = identity(user="worker_user")
+    created = core.admit_memory(owner, content="worker once deletion record", summary="worker deletion")
+    requested = lifecycle.request_deletion(owner, created["memory_id"])
+    runtime = tmp_path / "runtime"
+    heartbeat = runtime / "heartbeat.json"
+    monkeypatch.setattr(memory_worker, "paths", lambda: {
+        "runtime": runtime,
+        "pid": runtime / "worker.json",
+        "heartbeat": heartbeat,
+        "log": tmp_path / "worker.log",
+    })
+
+    report = memory_worker.run_once()
+
+    assert report["ok"] is True
+    assert report["schema_contract_ready"] is True
+    assert any(item["status"] == "processed" for item in report["last_batch"])
+    assert heartbeat.is_file()
+    with core._engine().connect() as connection:
+        assert connection.execute(
+            text("SELECT status FROM ai_memory_deletion_jobs WHERE job_id=:job_id"),
+            {"job_id": requested["job_id"]},
+        ).scalar_one() == "completed"
+        assert connection.execute(
+            text("SELECT count(*) FROM ai_memory_records WHERE memory_id=:memory_id"),
+            {"memory_id": created["memory_id"]},
+        ).scalar_one() == 0
